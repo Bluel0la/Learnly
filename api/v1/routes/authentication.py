@@ -76,8 +76,10 @@ def get_current_user_details(
         "user_id": user.user_id,
         "first_name": user.firstname,
         "last_name": user.lastname,
+        "gender": user.gender,
+        "age": user.age,
         "email": user.email,
-        
+        "educational_level": user.educational_level,
     }
 
 
@@ -92,31 +94,3 @@ def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     db.commit()
 
     return {"detail": "Successfully logged out"}
-
-@auth.get("/me")
-def get_user_details(
-    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
-):
-    """
-    Get the current user's details.
-    """
-    payload = decode_access_token(token)
-    if not payload:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-    email = payload.get("sub")
-    user = db.query(User).filter(User.email == email).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return {
-        "user_id": user.user_id,
-        "first_name": user.firstname,
-        "last_name": user.lastname,
-        "gender": user.gender,
-        "age": user.age,
-        "email": user.email,
-        "educational_level": user.educational_level,
-    }
-    
