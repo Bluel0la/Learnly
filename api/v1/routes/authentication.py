@@ -2,6 +2,8 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from sqlalchemy.orm import Session
 from api.db.database import get_db  
 from api.v1.models.user import User 
+from api.utils.authentication import get_current_user
+from api.v1.models.revoked_tokens import RevokedToken
 from api.v1.schemas.UserRegister import UserCreate, UserSignin
 from api.utils.authentication import hash_password, verify_password, create_access_token, decode_access_token
 from jose import jwt
@@ -80,6 +82,41 @@ def get_current_user_details(
 
 
 @auth.post("/logout")
-def logout(token: str = Depends(oauth2_scheme)):
-    blacklisted_tokens.add(token)
-    return {"message": "Logged out successfully"}
+def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    """
+    Logout the user by revoking their access token.
+    """
+    # Add the token to the RevokedToken table
+    revoked_token = RevokedToken(token=token)
+    db.add(revoked_token)
+    db.commit()
+
+    return {"detail": "Successfully logged out"}
+
+@auth.get("/me")
+def get_user_details(
+    token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
+):
+    """
+    Get the current user's details.
+    """
+    payload = decode_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    email = payload.get("sub")
+    user = db.query(User).filter(User.email == email).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {
+        "user_id": user.user_id,
+        "first_name": user.firstname,
+        "last_name": user.lastname,
+        "gender": user.gender,
+        "age": user.age,
+        "email": user.email,
+        "educational_level": user.educational_level,
+    }
+    
