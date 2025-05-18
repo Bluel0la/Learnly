@@ -21,7 +21,8 @@ app = FastAPI(lifespan=lifespan)
 
 
 origins = [
-    "http://localhost:8000"
+    "http://localhost:8000",
+    "https://learnly-lgx7.onrender.com"
 ]
 
 app.add_middleware(
