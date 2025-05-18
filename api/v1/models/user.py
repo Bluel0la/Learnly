@@ -10,10 +10,10 @@ class User(Base):
     user_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     firstname = Column(String(100))
     lastname = Column(String(100))
-    educational_level = Column(String(100))
+    educational_level = Column(String(100), nullable=True)
     email = Column(String(255), unique=True, nullable=False)
     password = Column(String, nullable=False)
-    gender = Column(String(10))
+    gender = Column(String(10), nullable=True)
     age = Column(Integer)
 
     chats = relationship("Chat", back_populates="user", cascade="all, delete")
