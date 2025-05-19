@@ -22,6 +22,7 @@ origins = [
     "http://localhost:8000",
     "https://learnly-lgx7.onrender.com",
     "https://intellect-canvas-ui.lovable.app",
+    "https://preview--intellect-canvas-ui.lovable.app",
 ]
 
 app.add_middleware(
