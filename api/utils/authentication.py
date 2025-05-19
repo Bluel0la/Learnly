@@ -29,6 +29,19 @@ def hash_password(password: str) -> str:
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
+
+# Check if the token has been blacklisted
+def is_token_revoked(db: Session, token: str) -> bool:
+    return db.query(RevokedToken).filter_by(token=token).first() is not None
+
+
+# Function to revoke a token
+def revoke_token(db: Session, token: str):
+    if not is_token_revoked(db, token):
+        revoked_token = RevokedToken(token=token)
+        db.add(revoked_token)
+        db.commit()
+
 # Generate JWT token
 def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
@@ -40,7 +53,10 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def decode_access_token(token: str):
+def decode_access_token(token: str, db: Session = Depends(get_db)):
+    if is_token_revoked(db, token):
+        raise HTTPException(status_code=401, detail="Token has been revoked.")
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload

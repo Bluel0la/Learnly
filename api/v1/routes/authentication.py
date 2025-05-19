@@ -1,11 +1,11 @@
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from api.db.database import get_db  
 from api.v1.models.user import User 
 from api.utils.authentication import get_current_user
 from api.v1.models.revoked_tokens import RevokedToken
-from api.v1.schemas.UserRegister import UserCreate, UserSignin
-from api.utils.authentication import hash_password, verify_password, create_access_token, decode_access_token
+from api.v1.schemas.UserRegister import UserCreate, UserSignin, UserUpdate
+from api.utils.authentication import hash_password, verify_password, create_access_token, decode_access_token, revoke_token
 from jose import jwt
 from fastapi.security import OAuth2PasswordBearer
 from dotenv import load_dotenv
@@ -84,13 +84,43 @@ def get_current_user_details(
 
 
 @auth.post("/logout")
-def logout(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    """
-    Logout the user by revoking their access token.
-    """
-    # Add the token to the RevokedToken table
-    revoked_token = RevokedToken(token=token)
-    db.add(revoked_token)
-    db.commit()
-
+def logout(
+    background_tasks: BackgroundTasks,
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    background_tasks.add_task(revoke_token, token, db)
     return {"detail": "Successfully logged out"}
+
+
+# Update User Information
+@auth.put("/update")
+def update_details(
+    user_data: UserUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+
+    user = db.query(User).filter(User.user_id == current_user.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+        # Update user fields if provided
+    if user_data.firstname is not None:
+        user.firstname = user_data.firstname
+    if user_data.lastname is not None:
+        user.lastname = user_data.lastname
+    if user_data.educational_level is not None:
+        user.educational_level = user_data.educational_level
+    if user_data.age is not None:
+        user.age = user_data.age
+
+    # Commit the changes to the database
+    db.commit()
+    db.refresh(user)
+
+    return{
+        "message": "User detail successfully updated",
+        "user_id": current_user.user_id
+    }
