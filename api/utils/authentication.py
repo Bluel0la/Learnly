@@ -53,7 +53,7 @@ def create_access_token(data: dict, expires_delta: timedelta = None):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def decode_access_token(token: str, db: Session = Depends(get_db)):
+def decode_access_token(token: str, db: Session):
     if is_token_revoked(db, token):
         raise HTTPException(status_code=401, detail="Token has been revoked.")
 
