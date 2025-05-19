@@ -124,3 +124,19 @@ def update_details(
         "message": "User detail successfully updated",
         "user_id": current_user.user_id
     }
+
+# Delete a user's account
+@auth.delete("/delete")
+def delete_account(
+    db: Session = Depends(get_db), current_user: User = Depends(get_current_user)
+):
+    user = db.query(User).filter(User.user_id == current_user.user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    db.delete(user)
+    db.commit()
+
+    return {"message": "User account successfully deleted"}
+
