@@ -62,7 +62,7 @@ def login(user_data: UserSignin, db: Session = Depends(get_db)):
 def get_current_user_details(
     token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)
 ):
-    payload = decode_access_token(token)
+    payload = decode_access_token(token, db)
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid token")
 
