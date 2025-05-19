@@ -53,7 +53,9 @@ def login(user_data: UserSignin, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Generate JWT
-    access_token = create_access_token(data={"sub": user.email})
+    access_token = create_access_token(
+        data={"sub": user.email, "user_id": user.user_id}
+    )
 
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -139,4 +141,3 @@ def delete_account(
     db.commit()
 
     return {"message": "User account successfully deleted"}
-
