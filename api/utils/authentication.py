@@ -75,7 +75,7 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Token is revoked"
         )
 
-    payload = decode_access_token(token)
+    payload = decode_access_token(token, db)
     if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
