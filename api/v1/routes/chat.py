@@ -11,7 +11,6 @@ from api.db.database import get_db
 from dotenv import load_dotenv
 from uuid import uuid4
 from uuid import UUID
-import numpy as np
 import requests
 import re
 import os
