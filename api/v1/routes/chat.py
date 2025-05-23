@@ -9,7 +9,6 @@ from api.v1.models.user import User
 from api.v1.models.chat import Chat
 from api.db.database import get_db
 from dotenv import load_dotenv
-from langdetect import detect
 from uuid import uuid4
 from uuid import UUID
 import numpy as np
