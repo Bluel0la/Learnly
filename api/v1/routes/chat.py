@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from PIL import Image
 from uuid import uuid4
 from uuid import UUID
-import io, os, requests
+import io, os, requests, time
 
 load_dotenv(".env")
 
@@ -198,22 +198,37 @@ def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1500) -> bytes:
     return best_compressed if best_compressed else compressed
 
 
+def post_to_ocr_space(image_data: bytes, retries: int = 3, delay: int = 2) -> dict:
+    for attempt in range(retries):
+        try:
+            response = requests.post(
+                url="https://api.ocr.space/parse/image",
+                files={"filename": ("compressed.jpg", image_data)},
+                data={
+                    "apikey": OCR_API_KEY,
+                    "language": "eng",
+                    "OCREngine": "2",
+                },
+                timeout=60,  # allow more time for processing
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.Timeout:
+            if attempt < retries - 1:
+                time.sleep(delay)
+                delay *= 2
+            else:
+                raise
+        except requests.exceptions.RequestException as req_err:
+            raise ValueError(f"OCR API request failed: {req_err}")
+
+
 @chat.post("/extract-text/")
 async def extract_text(file: UploadFile = File(...)):
     try:
         image_bytes = await file.read()
         compressed_image = compress_image(image_bytes)
-
-        response = requests.post(
-            url="https://api.ocr.space/parse/image",
-            files={"filename": ("compressed.jpg", compressed_image)},
-            data={
-                "apikey": OCR_API_KEY,
-                "language": "eng",
-                "OCREngine": "2",
-            },
-        )
-        result = response.json()
+        result = post_to_ocr_space(compressed_image)
 
         if result.get("IsErroredOnProcessing"):
             error_msg = result.get("ErrorMessage", "Unknown error")
@@ -221,6 +236,7 @@ async def extract_text(file: UploadFile = File(...)):
 
         parsed_text = result["ParsedResults"][0].get("ParsedText", "")
         return JSONResponse(content={"text": parsed_text})
+
     except ValueError as ve:
         return JSONResponse(content={"error": str(ve)}, status_code=422)
     except Exception as e:
