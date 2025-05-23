@@ -9,9 +9,11 @@ from api.v1.models.user import User
 from api.v1.models.chat import Chat
 from api.db.database import get_db
 from dotenv import load_dotenv
+from PIL import Image
 from uuid import uuid4
 from uuid import UUID
 import requests
+import io
 import re
 import os
 
@@ -174,24 +176,48 @@ def get_all_chat_sessions(
     ]
 
 
+def compress_image(image_bytes: bytes, max_size_kb=1024) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes))
+
+    max_dim = 1500
+    if max(img.size) > max_dim:
+        img.thumbnail((max_dim, max_dim))
+
+    output = io.BytesIO()
+    quality = 70
+    img.save(output, format="JPEG", optimize=True, quality=quality)
+    compressed = output.getvalue()
+
+    while len(compressed) > max_size_kb * 1024 and quality > 10:
+        output = io.BytesIO()
+        quality -= 10
+        img.save(output, format="JPEG", optimize=True, quality=quality)
+        compressed = output.getvalue()
+
+    return compressed
+
+
 @chat.post("/extract-text/")
 async def extract_text(file: UploadFile = File(...)):
     try:
-        contents = await file.read()
+        image_bytes = await file.read()
+        compressed_image = compress_image(image_bytes)
+
         response = requests.post(
             url="https://api.ocr.space/parse/image",
-            files={"filename": (file.filename, contents)},
+            files={"filename": ("compressed.jpg", compressed_image)},
             data={
                 "apikey": OCR_API_KEY,
-                "language": "eng",  # Auto: 'eng', or others like 'spa', 'fra', 'deu'
-                "OCREngine": "2",  # 1 = default, 2 = improved engine
+                "language": "eng",
+                "OCREngine": "2",
             },
         )
         result = response.json()
 
         if result.get("IsErroredOnProcessing"):
             return JSONResponse(
-                content={"error": result.get("ErrorMessage")}, status_code=400
+                content={"error": result.get("ErrorMessage", "Unknown error")},
+                status_code=400,
             )
 
         parsed_text = result["ParsedResults"][0]["ParsedText"]
