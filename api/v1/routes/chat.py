@@ -11,20 +11,16 @@ from api.db.database import get_db
 from dotenv import load_dotenv
 from langdetect import detect
 from uuid import uuid4
-from PIL import Image
 from uuid import UUID
 import numpy as np
-import pytesseract
 import requests
-import cv2
-import io
 import re
 import os
 
 load_dotenv(".env")
 
 model_endpoint = os.getenv("MODEL_ENDPOINT")
-
+OCR_API_KEY = os.getenv("OCR_API")
 
 chat = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -180,51 +176,28 @@ def get_all_chat_sessions(
     ]
 
 
-def clean_ocr_text(text: str) -> str:
-    text = re.sub(r"\n{2,}", "\n", text)
-    text = re.sub(r"[^\x00-\x7F]+", "", text)
-    return text.strip()
-
-
-def preprocess_image(image_bytes: bytes) -> np.ndarray:
-    """Convert image to OpenCV format and apply denoising, grayscale, and thresholding."""
-    np_img = np.frombuffer(image_bytes, np.uint8)
-    img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    denoised = cv2.fastNlMeansDenoising(gray, None, 30, 7, 21)
-    _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return thresh
-
-
 @chat.post("/extract-text/")
 async def extract_text(file: UploadFile = File(...)):
     try:
-        image_bytes = await file.read()
-        preprocessed_img = preprocess_image(image_bytes)
+        contents = await file.read()
+        response = requests.post(
+            url="https://api.ocr.space/parse/image",
+            files={"filename": (file.filename, contents)},
+            data={
+                "apikey": OCR_API_KEY,
+                "language": "eng",  # Auto: 'eng', or others like 'spa', 'fra', 'deu'
+                "OCREngine": "2",  # 1 = default, 2 = improved engine
+            },
+        )
+        result = response.json()
 
-        # Convert preprocessed OpenCV image to PIL for pytesseract
-        pil_img = Image.fromarray(cv2.cvtColor(preprocessed_img, cv2.COLOR_GRAY2RGB))
+        if result.get("IsErroredOnProcessing"):
+            return JSONResponse(
+                content={"error": result.get("ErrorMessage")}, status_code=400
+            )
 
-        # Basic OCR
-        raw_text = pytesseract.image_to_string(pil_img)
+        parsed_text = result["ParsedResults"][0]["ParsedText"]
+        return JSONResponse(content={"text": parsed_text})
 
-        # Detect language (to improve accuracy, could re-run with correct lang)
-        detected_lang_code = detect(raw_text)
-        lang_map = {
-            "en": "eng",
-            "fr": "fra",
-            "de": "deu",
-            "es": "spa",
-            "zh-cn": "chi_sim",
-            "ja": "jpn",
-            "ar": "ara",
-        }
-        tess_lang = lang_map.get(detected_lang_code, "eng")  # Default to English
-
-        # Second pass with correct language setting
-        final_text = pytesseract.image_to_string(pil_img, lang=tess_lang)
-        cleaned_text = clean_ocr_text(final_text)
-
-        return JSONResponse(content={"text": cleaned_text, "detected_lang": tess_lang})
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
