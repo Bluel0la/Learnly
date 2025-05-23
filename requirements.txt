@@ -109,5 +109,6 @@ uvicorn==0.30.6
 python-multipart
 pillow
 httpx
+typing-inspect
 fastapi-utils
 psutil
