@@ -108,3 +108,4 @@ uuid7==0.1.0
 uvicorn==0.30.6
 python-multipart
 pillow
+httpx

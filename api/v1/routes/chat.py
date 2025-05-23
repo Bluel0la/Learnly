@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from PIL import Image
 from uuid import uuid4
 from uuid import UUID
-import io, os, requests, time
+import io, os, requests, httpx, asyncio
 
 load_dotenv(".env")
 
@@ -173,7 +173,7 @@ def get_all_chat_sessions(
     ]
 
 
-def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1500) -> bytes:
+def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1000) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
@@ -198,29 +198,29 @@ def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1500) -> bytes:
     return best_compressed if best_compressed else compressed
 
 
-def post_to_ocr_space(image_data: bytes, retries: int = 3, delay: int = 2) -> dict:
-    for attempt in range(retries):
-        try:
-            response = requests.post(
-                url="https://api.ocr.space/parse/image",
-                files={"filename": ("compressed.jpg", image_data)},
-                data={
-                    "apikey": OCR_API_KEY,
-                    "language": "eng",
-                    "OCREngine": "2",
-                },
-                timeout=60,  # allow more time for processing
-            )
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.Timeout:
-            if attempt < retries - 1:
-                time.sleep(delay)
-                delay *= 2
-            else:
-                raise
-        except requests.exceptions.RequestException as req_err:
-            raise ValueError(f"OCR API request failed: {req_err}")
+async def post_to_ocr_space_async(
+    image_data: bytes, retries: int = 3, delay: int = 2
+) -> dict:
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        for attempt in range(retries):
+            try:
+                response = await client.post(
+                    url="https://api.ocr.space/parse/image",
+                    files={"filename": ("compressed.jpg", image_data)},
+                    data={
+                        "apikey": OCR_API_KEY,
+                        "language": "eng",
+                        "OCREngine": "2",
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.RequestError:
+                if attempt < retries - 1:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                else:
+                    raise
 
 
 @chat.post("/extract-text/")
@@ -228,7 +228,7 @@ async def extract_text(file: UploadFile = File(...)):
     try:
         image_bytes = await file.read()
         compressed_image = compress_image(image_bytes)
-        result = post_to_ocr_space(compressed_image)
+        result = await post_to_ocr_space_async(compressed_image)
 
         if result.get("IsErroredOnProcessing"):
             error_msg = result.get("ErrorMessage", "Unknown error")
