@@ -89,7 +89,8 @@ def logout(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
-    background_tasks.add_task(revoke_token, token, db)
+    # ✅ Correct order: db first, then token
+    background_tasks.add_task(revoke_token, db, token)
     return {"detail": "Successfully logged out"}
 
 
@@ -139,4 +140,3 @@ def delete_account(
     db.commit()
 
     return {"message": "User account successfully deleted"}
-
