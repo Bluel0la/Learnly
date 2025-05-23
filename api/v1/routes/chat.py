@@ -12,10 +12,7 @@ from dotenv import load_dotenv
 from PIL import Image
 from uuid import uuid4
 from uuid import UUID
-import requests
-import io
-import re
-import os
+import io, os, requests
 
 load_dotenv(".env")
 
@@ -176,25 +173,29 @@ def get_all_chat_sessions(
     ]
 
 
-def compress_image(image_bytes: bytes, max_size_kb=1024) -> bytes:
+def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1500) -> bytes:
     img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
 
-    max_dim = 1500
     if max(img.size) > max_dim:
         img.thumbnail((max_dim, max_dim))
 
-    output = io.BytesIO()
-    quality = 70
-    img.save(output, format="JPEG", optimize=True, quality=quality)
-    compressed = output.getvalue()
+    min_q, max_q = 10, 95
+    best_compressed = None
 
-    while len(compressed) > max_size_kb * 1024 and quality > 10:
+    while min_q <= max_q:
+        mid_q = (min_q + max_q) // 2
         output = io.BytesIO()
-        quality -= 10
-        img.save(output, format="JPEG", optimize=True, quality=quality)
+        img.save(output, format="JPEG", optimize=True, quality=mid_q)
         compressed = output.getvalue()
+        if len(compressed) <= max_size_kb * 1024:
+            best_compressed = compressed
+            min_q = mid_q + 1
+        else:
+            max_q = mid_q - 1
 
-    return compressed
+    return best_compressed if best_compressed else compressed
 
 
 @chat.post("/extract-text/")
@@ -215,13 +216,14 @@ async def extract_text(file: UploadFile = File(...)):
         result = response.json()
 
         if result.get("IsErroredOnProcessing"):
-            return JSONResponse(
-                content={"error": result.get("ErrorMessage", "Unknown error")},
-                status_code=400,
-            )
+            error_msg = result.get("ErrorMessage", "Unknown error")
+            return JSONResponse(content={"error": error_msg}, status_code=400)
 
-        parsed_text = result["ParsedResults"][0]["ParsedText"]
+        parsed_text = result["ParsedResults"][0].get("ParsedText", "")
         return JSONResponse(content={"text": parsed_text})
-
+    except ValueError as ve:
+        return JSONResponse(content={"error": str(ve)}, status_code=422)
     except Exception as e:
-        return JSONResponse(content={"error": str(e)}, status_code=500)
+        return JSONResponse(
+            content={"error": f"Unexpected server error: {e}"}, status_code=500
+        )
