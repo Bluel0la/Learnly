@@ -109,3 +109,4 @@ uvicorn==0.30.6
 python-multipart
 pillow
 httpx
+fastapi-utils

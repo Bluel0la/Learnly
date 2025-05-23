@@ -1,6 +1,7 @@
 from api.v1.schemas.chat import ModelRequest, ModelResponse as ModelResponseSchema, ChatCreate
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from api.utils.authentication import get_current_user
+from api.utils.rates import is_rate_limited
 from api.v1.models.modelresponse import ModelResponse
 from api.v1.models.userprompt import UserPrompt
 from sqlalchemy.orm import Session, joinedload
@@ -199,7 +200,7 @@ def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1000) -> bytes:
 
 
 async def post_to_ocr_space_async(
-    image_data: bytes, retries: int = 3, delay: int = 2
+    image_data: bytes, retries: int = 3, delay: int = 2,
 ) -> dict:
     async with httpx.AsyncClient(timeout=60.0) as client:
         for attempt in range(retries):
@@ -224,7 +225,29 @@ async def post_to_ocr_space_async(
 
 
 @chat.post("/extract-text/")
-async def extract_text(file: UploadFile = File(...)):
+async def extract_text(
+    file: UploadFile = File(...), current_user: User = Depends(get_current_user)
+):
+
+    # ✅ Content-type validation
+    ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        return JSONResponse(
+            content={
+                "error": f"Unsupported file type: {file.content_type}. Please upload a JPEG, PNG, or WEBP image."
+            },
+            status_code=415,
+        )
+
+    # ✅ Rate limiting per user
+    if is_rate_limited(current_user.user_id):
+        return JSONResponse(
+            content={
+                "error": "Rate limit exceeded. Please wait a moment before trying again."
+            },
+            status_code=429,
+        )
+
     try:
         image_bytes = await file.read()
         compressed_image = compress_image(image_bytes)
