@@ -1,18 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session, joinedload
-import requests
-from uuid import uuid4
-
-from api.utils.authentication import get_current_user
-from api.db.database import get_db
 from api.v1.schemas.chat import ModelRequest, ModelResponse as ModelResponseSchema, ChatCreate
-from api.v1.models.user import User
-from api.v1.models.userprompt import UserPrompt
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from api.utils.authentication import get_current_user
 from api.v1.models.modelresponse import ModelResponse
-from api.v1.models.chat import Chat  # assuming Chat model exists
-from uuid import UUID
-import os
+from api.v1.models.userprompt import UserPrompt
+from sqlalchemy.orm import Session, joinedload
+from fastapi.responses import JSONResponse
+from api.v1.models.user import User
+from api.v1.models.chat import Chat
+from api.db.database import get_db
 from dotenv import load_dotenv
+from langdetect import detect
+from uuid import uuid4
+from PIL import Image
+from uuid import UUID
+import numpy as np
+import pytesseract
+import requests
+import cv2
+import io
+import re
+import os
+
 load_dotenv(".env")
 
 model_endpoint = os.getenv("MODEL_ENDPOINT")
@@ -170,3 +178,53 @@ def get_all_chat_sessions(
         }
         for session in chat_sessions
     ]
+
+
+def clean_ocr_text(text: str) -> str:
+    text = re.sub(r"\n{2,}", "\n", text)
+    text = re.sub(r"[^\x00-\x7F]+", "", text)
+    return text.strip()
+
+
+def preprocess_image(image_bytes: bytes) -> np.ndarray:
+    """Convert image to OpenCV format and apply denoising, grayscale, and thresholding."""
+    np_img = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    denoised = cv2.fastNlMeansDenoising(gray, None, 30, 7, 21)
+    _, thresh = cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return thresh
+
+
+@chat.post("/extract-text/")
+async def extract_text(file: UploadFile = File(...)):
+    try:
+        image_bytes = await file.read()
+        preprocessed_img = preprocess_image(image_bytes)
+
+        # Convert preprocessed OpenCV image to PIL for pytesseract
+        pil_img = Image.fromarray(cv2.cvtColor(preprocessed_img, cv2.COLOR_GRAY2RGB))
+
+        # Basic OCR
+        raw_text = pytesseract.image_to_string(pil_img)
+
+        # Detect language (to improve accuracy, could re-run with correct lang)
+        detected_lang_code = detect(raw_text)
+        lang_map = {
+            "en": "eng",
+            "fr": "fra",
+            "de": "deu",
+            "es": "spa",
+            "zh-cn": "chi_sim",
+            "ja": "jpn",
+            "ar": "ara",
+        }
+        tess_lang = lang_map.get(detected_lang_code, "eng")  # Default to English
+
+        # Second pass with correct language setting
+        final_text = pytesseract.image_to_string(pil_img, lang=tess_lang)
+        cleaned_text = clean_ocr_text(final_text)
+
+        return JSONResponse(content={"text": cleaned_text, "detected_lang": tess_lang})
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
