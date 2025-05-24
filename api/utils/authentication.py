@@ -36,11 +36,14 @@ def is_token_revoked(db: Session, token: str) -> bool:
 
 
 # Function to revoke a token
-def revoke_token(db: Session, token: str):
-    if not is_token_revoked(db, token):
-        revoked_token = RevokedToken(token=token)
-        db.add(revoked_token)
-        db.commit()
+def revoke_token(db: Session, token: str, user_id: str):
+    expires_at = datetime.utcnow() + timedelta(
+        days=7
+    )  # or extract from token if preferred
+    revoked = RevokedToken(token=token, user_id=user_id, expires_at=expires_at)
+    db.add(revoked)
+    db.commit()
+
 
 # Generate JWT token
 def create_access_token(data: dict, expires_delta: timedelta = None):

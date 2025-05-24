@@ -6,7 +6,7 @@ from api.utils.authentication import get_current_user
 from api.v1.models.revoked_tokens import RevokedToken
 from api.v1.schemas.UserRegister import UserCreate, UserSignin, UserUpdate
 from api.utils.authentication import hash_password, verify_password, create_access_token, decode_access_token, revoke_token
-from jose import jwt
+from jose import jwt, JWTError
 from fastapi.security import OAuth2PasswordBearer
 from dotenv import load_dotenv
 import os
@@ -89,8 +89,26 @@ def logout(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
-    # ✅ Correct order: db first, then token
-    background_tasks.add_task(revoke_token, db, token)
+    try:
+        payload = jwt.decode(
+            token, SECRET_KEY, algorithms=[ALGORITHM]
+        )
+        email = payload.get("sub")
+        if email is None:
+            raise ValueError("Token payload missing subject (email).")
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+        )
+
+    # 🔍 Query user by email
+    user = db.query(User).filter(User.email == email).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+        )
+
+    background_tasks.add_task(revoke_token, db, token, user.id)
     return {"detail": "Successfully logged out"}
 
 
