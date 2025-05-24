@@ -1,11 +1,13 @@
 from api.v1.schemas.chat import ModelRequest, ModelResponse as ModelResponseSchema, ChatCreate
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from api.utils.authentication import get_current_user
+from api.utils.ocr_clean import normalize_text, clean_ocr_text
 from api.utils.rates import is_rate_limited
 from api.v1.models.modelresponse import ModelResponse
 from api.v1.models.userprompt import UserPrompt
 from sqlalchemy.orm import Session, joinedload
 from fastapi.responses import JSONResponse
+from collections import defaultdict
 from api.v1.models.user import User
 from api.v1.models.chat import Chat
 from api.db.database import get_db
@@ -19,6 +21,7 @@ load_dotenv(".env")
 
 model_endpoint = os.getenv("MODEL_ENDPOINT")
 OCR_API_KEY = os.getenv("OCR_API")
+
 
 chat = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -258,7 +261,10 @@ async def extract_text(
             return JSONResponse(content={"error": error_msg}, status_code=400)
 
         parsed_text = result["ParsedResults"][0].get("ParsedText", "")
-        return JSONResponse(content={"text": parsed_text})
+        normalized = normalize_text(parsed_text)
+        corrected = clean_ocr_text(normalized)
+
+        return JSONResponse(content={"text": corrected})
 
     except ValueError as ve:
         return JSONResponse(content={"error": str(ve)}, status_code=422)

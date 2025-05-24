@@ -112,3 +112,4 @@ httpx
 typing-inspect
 fastapi-utils
 psutil
+pyspellchecker
