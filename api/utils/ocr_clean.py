@@ -4,14 +4,13 @@ import re
 spell = SpellChecker()
 spell.word_frequency.load_words(["warehouse", "supplies", "logistics", "transport", "Ayodele"])
 
-
 def normalize_text(text: str) -> str:
-    # Allow alphanumerics, arithmetic signs, and common punctuation + \n
-    allowed = re.compile(r"[^\w\s\+\-\*xX÷/=^%\n.,!?]")
+    # Allow math symbols, brackets, punctuation, and newlines
+    allowed = re.compile(r"[^\w\s\+\-\*xX÷/=^%\n.,!?\[\]\(\)\{\}]")
     text = allowed.sub("", text)
-    # Normalize multiple spaces but preserve newlines
+    # Normalize spaces but keep newlines
     text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n\s+", "\n", text)  # Remove leading spaces after newline
+    text = re.sub(r"\n\s+", "\n", text)
     return text.strip()
 
 
