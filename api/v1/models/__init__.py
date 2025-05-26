@@ -9,3 +9,5 @@ from api.v1.models.deck import Deck
 from api.v1.models.deck_card import DeckCard
 from api.v1.models.refresh_tokens import RefreshToken
 from api.v1.models.revoked_tokens import RevokedToken
+from api.v1.models.flash_attempt import FlashcardAttempt
+from api.v1.models.reinforced_cards import ReinforcedCard
