@@ -113,3 +113,6 @@ typing-inspect
 fastapi-utils
 psutil
 pyspellchecker
+python-docx 
+PyPDF2
+python-pptx
