@@ -241,7 +241,7 @@ async def generate_flashcards_from_notes(
             status_code=400, detail="No key points returned from summarization."
         )
 
-    # Step 3: Generate flashcards using parallel calls
+    # Step 3: Generate flashcards in parallel
     async def generate_card(point: str, index: int):
         print(f"\n🔹 Generating flashcard for point {index+1}")
         try:
@@ -252,12 +252,12 @@ async def generate_flashcards_from_notes(
             raw_text = resp.json().get("response", "")
             print(f"🔸 Raw response:\n{raw_text}\n")
 
-            # Direct extraction from Q/A format
+            # Improved regex patterns for Q/A extraction (non-greedy matching)
             patterns = [
-    r"Q:\s*(.*?)\s*A:\s*(.*)",  # Original format
-    r"Question:\s*(.*?)\s*Answer:\s*(.*)",  # Common variant
-    r"Question\s*-\s*(.*?)\s*Answer\s*-\s*(.*)",  # Hyphen variant
-]
+                r"Q:\s*(.+?)\s*A:\s*(.+)",              # Q: ... A: ...
+                r"Question:\s*(.+?)\s*Answer:\s*(.+)",  # Question: ... Answer: ...
+                r"Question\s*-\s*(.+?)\s*Answer\s*-\s*(.+)",  # Question - ... Answer - ...
+            ]
 
             match = None
             for pat in patterns:
@@ -266,16 +266,21 @@ async def generate_flashcards_from_notes(
                     break
 
             if not match:
-                print(f"❌ Pattern mismatch. Skipping this raw output:\n{raw_text[:300]}")("❌ Pattern mismatch. Skipping.")
+                print(f"❌ Pattern mismatch. Skipping this raw output:\n{raw_text[:300]}")
                 return None
-
 
             question = match.group(1).strip()
             answer = match.group(2).strip()
 
+            # Basic validation - reject empty or placeholder content
+            if question.lower() in {"n/a", "", "none"} or answer.lower() in {"n/a", "", "none"}:
+                print("❌ Invalid Q/A pair detected. Skipping.")
+                return None
+
             print(f"🔹 Final Flashcard:\nQ: {question}\nA: {answer}\n")
 
             return {"question": question, "answer": answer}
+
         except Exception as e:
             print(f"❌ Flashcard generation failed: {str(e)}")
             return None
@@ -288,7 +293,7 @@ async def generate_flashcards_from_notes(
     if not qa_pairs:
         raise HTTPException(status_code=400, detail="No valid Q&A pairs generated.")
 
-    # Step 4: Save to database
+    # Step 4: Save flashcards to database
     flashcards_to_save = [
         card_models.DeckCard(
             deck_id=deck_id,
@@ -304,8 +309,7 @@ async def generate_flashcards_from_notes(
         "message": f"{len(flashcards_to_save)} flashcards generated and saved.",
         "cards": qa_pairs,
     }
-
-
+    
 @flashcards.post("/decks/{deck_id}/generate-flashcards/")
 async def upload_notes_and_generate_flashcards(
     deck_id: UUID,
