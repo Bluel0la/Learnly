@@ -18,14 +18,26 @@ flashcards = APIRouter(prefix="/flashcard", tags=["Flashcards"])
 model_util_endpoint = os.getenv("MODEL_UTILITY")
 model_chat_endpoint = os.getenv("MODEL_ENDPOINT")
 
+
 # 🔧 Helper: Parse LLM response
 def parse_flashcard_response(text: str):
-    q_match = re.search(r"Question:\s*(.*)", text, re.IGNORECASE)
-    a_match = re.search(r"Answer:\s*(.*)", text, re.IGNORECASE)
-    return (
-        q_match.group(1).strip() if q_match else "N/A",
-        a_match.group(1).strip() if a_match else "N/A",
+    # Normalize and strip input
+    text = text.strip()
+
+    # Match formatted Question/Answer using optional markdown/bullet styles
+    question_match = re.search(
+        r"(?:^|\n)\s*(?:\*\*|[-*])?\s*Question\s*[:：]\s*(.+?)(?=\n\s*(?:\*\*|[-*])?\s*Answer\s*[:：])",
+        text, re.IGNORECASE | re.DOTALL
     )
+    answer_match = re.search(
+        r"(?:^|\n)\s*(?:\*\*|[-*])?\s*Answer\s*[:：]\s*(.+)", 
+        text, re.IGNORECASE | re.DOTALL
+    )
+
+    question = question_match.group(1).strip() if question_match else "N/A"
+    answer = answer_match.group(1).strip() if answer_match else "N/A"
+
+    return question, answer
 
 
 def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> str:
@@ -173,8 +185,7 @@ async def generate_flashcards_from_notes(
     deck_id: UUID,
     notes: schemas.NoteChunks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
+    current_user: User = Depends(get_current_user),):
     flashcard_url = f"{model_chat_endpoint}/flashcard"
     summarization_url = f"{model_util_endpoint}/flashcard-summarization"
 
