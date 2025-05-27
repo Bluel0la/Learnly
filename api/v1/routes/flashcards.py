@@ -207,7 +207,8 @@ async def generate_flashcards_from_notes(
     deck_id: UUID,
     notes: schemas.NoteChunks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),):
+    current_user: User = Depends(get_current_user),
+):
     flashcard_url = f"{model_chat_endpoint}/flashcard"
     summarization_url = f"{model_util_endpoint}/flashcard-summarization"
 
@@ -251,11 +252,17 @@ async def generate_flashcards_from_notes(
             raw_text = resp.json().get("response", "")
             print(f"🔸 Raw response:\n{raw_text}\n")
 
-            question, answer = parse_flashcard_response(raw_text)
-            print(f"🔹 Parsed Flashcard:\nQ: {question}\nA: {answer}\n")
-
-            if question == "N/A" or answer == "N/A":
+            # Direct extraction from Q/A format
+            match = re.search(r"Q:\s*(.*?)\s*A:\s*(.*)", raw_text, re.DOTALL)
+            if not match:
+                print("❌ Pattern mismatch. Skipping.")
                 return None
+
+            question = match.group(1).strip()
+            answer = match.group(2).strip()
+
+            print(f"🔹 Final Flashcard:\nQ: {question}\nA: {answer}\n")
+
             return {"question": question, "answer": answer}
         except Exception as e:
             print(f"❌ Flashcard generation failed: {str(e)}")
