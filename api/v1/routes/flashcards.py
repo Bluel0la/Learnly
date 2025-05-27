@@ -253,10 +253,22 @@ async def generate_flashcards_from_notes(
             print(f"🔸 Raw response:\n{raw_text}\n")
 
             # Direct extraction from Q/A format
-            match = re.search(r"Q:\s*(.*?)\s*A:\s*(.*)", raw_text, re.DOTALL)
+            patterns = [
+    r"Q:\s*(.*?)\s*A:\s*(.*)",  # Original format
+    r"Question:\s*(.*?)\s*Answer:\s*(.*)",  # Common variant
+    r"Question\s*-\s*(.*?)\s*Answer\s*-\s*(.*)",  # Hyphen variant
+]
+
+            match = None
+            for pat in patterns:
+                match = re.search(pat, raw_text, re.DOTALL | re.IGNORECASE)
+                if match:
+                    break
+
             if not match:
-                print("❌ Pattern mismatch. Skipping.")
+                print(f"❌ Pattern mismatch. Skipping this raw output:\n{raw_text[:300]}")("❌ Pattern mismatch. Skipping.")
                 return None
+
 
             question = match.group(1).strip()
             answer = match.group(2).strip()
