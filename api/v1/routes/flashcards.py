@@ -23,14 +23,19 @@ model_chat_endpoint = os.getenv("MODEL_ENDPOINT")
 def parse_flashcard_response(text: str):
     text = text.strip()
 
-    # Primary attempt: extract formatted Q&A
+    # Pre-clean conversational preambles
+    text = re.sub(
+        r"^.*?(?=\bQuestion\s*:)", "", text, flags=re.IGNORECASE | re.DOTALL
+    ).strip()
+
+    # Regex extraction
     question_match = re.search(
-        r"(?:^|\n)\s*(?:\*\*|[-*])?\s*Question\s*[:：]\s*(.+?)(?=\n\s*(?:\*\*|[-*])?\s*Answer\s*[:：])",
+        r"Question\s*[:：]\s*(.+?)\s*(?=Answer\s*[:：])",
         text,
         re.IGNORECASE | re.DOTALL,
     )
     answer_match = re.search(
-        r"(?:^|\n)\s*(?:\*\*|[-*])?\s*Answer\s*[:：]\s*(.+)",
+        r"Answer\s*[:：]\s*(.+)",
         text,
         re.IGNORECASE | re.DOTALL,
     )
@@ -40,7 +45,7 @@ def parse_flashcard_response(text: str):
         answer = answer_match.group(1).strip()
         return question, answer
 
-    # Fallback: try splitting based on first sentence for Q, rest for A
+    # Fallback
     lines = text.splitlines()
     if len(lines) == 1:
         sentence_split = re.split(r"[:：]", lines[0], maxsplit=1)
@@ -55,6 +60,7 @@ def parse_flashcard_response(text: str):
     question = first_line.rstrip(":：.") + "?"
     answer = remaining if remaining else "N/A"
     return question, answer
+
 
 def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> str:
     clean_slides = [s.strip() for s in slide_texts if s.strip()]
