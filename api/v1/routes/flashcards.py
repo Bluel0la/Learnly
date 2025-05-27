@@ -195,6 +195,10 @@ async def generate_flashcards_from_notes(
             )
         summary_resp.raise_for_status()
         key_points = summary_resp.json().get("points", [])
+
+        print("✅ Summary received")
+        for i, p in enumerate(key_points):
+            print(f"Point {i+1}: {p[:200]}...\n")
     except httpx.HTTPError as e:
         raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
 
@@ -204,26 +208,35 @@ async def generate_flashcards_from_notes(
         )
 
     # Step 3: Generate flashcards using parallel calls
-    async def generate_card(point: str):
+    async def generate_card(point: str, index: int):
+        print(f"\n🔹 Generating flashcard for point {index+1}")
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
                 resp = await client.post(flashcard_url, json={"prompt": point})
             resp.raise_for_status()
+
             raw_text = resp.json().get("response", "")
+            print(f"🔸 Raw response:\n{raw_text}\n")
+
             question, answer = parse_flashcard_response(raw_text)
+            print(f"🔹 Parsed Flashcard:\nQ: {question}\nA: {answer}\n")
+
             if question == "N/A" or answer == "N/A":
                 return None
             return {"question": question, "answer": answer}
-        except Exception:
+        except Exception as e:
+            print(f"❌ Flashcard generation failed: {str(e)}")
             return None
 
-    results = await asyncio.gather(*[generate_card(p) for p in key_points])
+    results = await asyncio.gather(
+        *[generate_card(p, i) for i, p in enumerate(key_points)]
+    )
     qa_pairs = [qa for qa in results if qa]
 
     if not qa_pairs:
         raise HTTPException(status_code=400, detail="No valid Q&A pairs generated.")
 
-    # Step 4: Save to database (optimized)
+    # Step 4: Save to database
     flashcards_to_save = [
         card_models.DeckCard(
             deck_id=deck_id,
