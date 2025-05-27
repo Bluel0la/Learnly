@@ -21,24 +21,40 @@ model_chat_endpoint = os.getenv("MODEL_ENDPOINT")
 
 # 🔧 Helper: Parse LLM response
 def parse_flashcard_response(text: str):
-    # Normalize and strip input
     text = text.strip()
 
-    # Match formatted Question/Answer using optional markdown/bullet styles
+    # Primary attempt: extract formatted Q&A
     question_match = re.search(
         r"(?:^|\n)\s*(?:\*\*|[-*])?\s*Question\s*[:：]\s*(.+?)(?=\n\s*(?:\*\*|[-*])?\s*Answer\s*[:：])",
-        text, re.IGNORECASE | re.DOTALL
+        text,
+        re.IGNORECASE | re.DOTALL,
     )
     answer_match = re.search(
-        r"(?:^|\n)\s*(?:\*\*|[-*])?\s*Answer\s*[:：]\s*(.+)", 
-        text, re.IGNORECASE | re.DOTALL
+        r"(?:^|\n)\s*(?:\*\*|[-*])?\s*Answer\s*[:：]\s*(.+)",
+        text,
+        re.IGNORECASE | re.DOTALL,
     )
 
-    question = question_match.group(1).strip() if question_match else "N/A"
-    answer = answer_match.group(1).strip() if answer_match else "N/A"
+    if question_match and answer_match:
+        question = question_match.group(1).strip()
+        answer = answer_match.group(1).strip()
+        return question, answer
 
+    # Fallback: try splitting based on first sentence for Q, rest for A
+    lines = text.splitlines()
+    if len(lines) == 1:
+        sentence_split = re.split(r"[:：]", lines[0], maxsplit=1)
+        if len(sentence_split) == 2:
+            return sentence_split[0].strip() + "?", sentence_split[1].strip()
+        else:
+            return "What is this about?", lines[0]
+
+    # More than one line fallback
+    first_line = lines[0]
+    remaining = " ".join(lines[1:]).strip()
+    question = first_line.rstrip(":：.") + "?"
+    answer = remaining if remaining else "N/A"
     return question, answer
-
 
 def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> str:
     clean_slides = [s.strip() for s in slide_texts if s.strip()]
