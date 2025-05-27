@@ -173,7 +173,7 @@ async def generate_flashcards_from_notes(
     deck_id: UUID,
     notes: schemas.NoteChunks,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     flashcard_url = f"{model_chat_endpoint}/flashcard"
     summarization_url = f"{model_util_endpoint}/flashcard-summarization"
