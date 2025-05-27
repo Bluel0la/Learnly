@@ -63,10 +63,11 @@ def query_model(
     )
     if not chat_session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
+    model_endpoint_url = f"{model_endpoint}/chat"
 
     try:
         model_api_response = requests.post(
-            model_endpoint, json={"prompt": user_input.prompt}
+            model_endpoint_url, json={"prompt": user_input.prompt}
         )
 
         if model_api_response.status_code != 200:
