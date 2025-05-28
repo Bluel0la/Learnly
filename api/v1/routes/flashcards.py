@@ -11,7 +11,7 @@ from PyPDF2 import PdfReader
 from docx import Document
 from typing import List, Optional
 from uuid import UUID
-import os, httpx, re, io, asyncio
+import os, httpx, re, io, asyncio, time
 
 
 flashcards = APIRouter(prefix="/flashcard", tags=["Flashcards"])
@@ -244,45 +244,120 @@ async def generate_flashcards_from_notes(
     # Step 3: Generate flashcards in parallel
 
 
-    async def generate_card(point: str, index: int):
+async def generate_flashcards_from_notes(
+    deck_id: UUID,
+    notes: schemas.NoteChunks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    flashcard_url = f"{model_chat_endpoint}/flashcard"
+    summarization_url = f"{model_util_endpoint}/flashcard-summarization"
+
+    # Step 1: Validate deck ownership
+    db_deck = (
+        db.query(models.Deck)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not db_deck:
+        raise HTTPException(status_code=404, detail="Deck not found.")
+
+    # Step 2: Summarize note chunks
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
+            summary_resp = await client.post(
+                summarization_url, json={"chunks": notes.chunks}
+            )
+        summary_resp.raise_for_status()
+        key_points = summary_resp.json().get("points", [])
+        print(f"✅ Summary received, {len(key_points)} key points: {key_points}")
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
+
+    if not key_points:
+        raise HTTPException(
+            status_code=400, detail="No key points returned from summarization."
+        )
+
+    # Step 3: Clean key points
+    cleaned_key_points = []
+    for point in key_points:
+        # Remove preamble
+        point = re.sub(
+            r"Here are the key educational insights.*?:\s*",
+            "",
+            point,
+            flags=re.IGNORECASE,
+        )
+        # Remove numbered prefixes (e.g., "1.", "2.")
+        point = re.sub(r"^\d+\.\s*", "", point).strip()
+        if point:
+            cleaned_key_points.append(point)
+    print(f"🔹 Cleaned key points: {cleaned_key_points}")
+
+    # Step 4: Generate flashcards in parallel
+    async def generate_card(point: str, index: int, semaphore: asyncio.Semaphore):
         print(f"🔹 Processing key point {index+1}: {point[:200]}...")
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-                resp = await client.post(flashcard_url, json={"prompt": point})
-            resp.raise_for_status()
-            response_data = resp.json()
-            print(f"🔸 Full response JSON for point {index+1}: {response_data}")
+        for attempt in range(3):  # Retry up to 3 times
+            try:
+                async with semaphore:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+                        resp = await client.post(flashcard_url, json={"prompt": point})
+                    resp.raise_for_status()
+                response_data = resp.json()
+                print(f"🔸 Full response JSON for point {index+1}: {response_data}")
 
-            # Handle structured JSON response
-            question = response_data.get("question", "").strip()
-            answer = response_data.get("answer", "").strip()
+                question = response_data.get("question", "").strip()
+                answer = response_data.get("answer", "").strip()
 
-            if not question or not answer:
-                print(f"❌ Invalid Q/A pair for point {index+1}: Q={question}, A={answer}")
-                return None
+                if not question or not answer:
+                    print(
+                        f"❌ Invalid Q/A pair for point {index+1}: Q={question}, A={answer}"
+                    )
+                    return None
 
-            # Relaxed validation
-            if len(question) < 5 or len(answer) < 5:
+                if len(question) < 5:
+                    print(f"❌ Question too short for point {index+1}: Q={question}")
+                    return None
+
                 print(
-                    f"❌ Q/A pair too short for point {index+1}: Q={question}, A={answer}"
+                    f"✅ Valid flashcard for point {index+1}:\nQ: {question}\nA: {answer}\n"
+                )
+                return {"question": question, "answer": answer}
+
+            except httpx.HTTPStatusError as e:
+                print(
+                    f"❌ HTTP error for point {index+1}, attempt {attempt+1}: {str(e)}, Status: {e.response.status_code}"
+                )
+                if attempt == 2:
+                    return None
+                await asyncio.sleep(1)
+            except httpx.RequestError as e:
+                print(
+                    f"❌ Network error for point {index+1}, attempt {attempt+1}: {str(e)}"
+                )
+                if attempt == 2:
+                    return None
+                await asyncio.sleep(1)
+            except Exception as e:
+                print(
+                    f"❌ Unexpected error for point {index+1}, attempt {attempt+1}: {str(e)}, Response: {locals().get('response_data', 'No response')}"
                 )
                 return None
+        return None
 
-            print(f"✅ Valid flashcard for point {index+1}:\nQ: {question}\nA: {answer}\n")
-            return {"question": question, "answer": answer}
-
-        except Exception as e:
-            print(f"❌ Flashcard generation failed for point {index+1}: {str(e)}")
-            return None
     results = await asyncio.gather(
-        *[generate_card(p, i) for i, p in enumerate(key_points)]
+        *[
+            generate_card(p, i, asyncio.Semaphore(3))
+            for i, p in enumerate(cleaned_key_points)
+        ]
     )
     qa_pairs = [qa for qa in results if qa]
 
     if not qa_pairs:
         raise HTTPException(status_code=400, detail="No valid Q&A pairs generated.")
 
-    # Step 4: Save flashcards to database
+    # Step 5: Save flashcards to database
     flashcards_to_save = [
         card_models.DeckCard(
             deck_id=deck_id,
@@ -298,74 +373,3 @@ async def generate_flashcards_from_notes(
         "message": f"{len(flashcards_to_save)} flashcards generated and saved.",
         "cards": qa_pairs,
     }
-
-
-@flashcards.post("/decks/{deck_id}/generate-flashcards/")
-async def upload_notes_and_generate_flashcards(
-    deck_id: UUID,
-    file: UploadFile = File(...),
-    debug: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    print("DEBUG: Upload handler called ✅")
-
-    allowed_exts = {"txt", "pdf", "docx", "md", "pptx"}
-    filename = file.filename
-    ext = filename.split(".")[-1].lower()
-
-    if ext not in allowed_exts:
-        print(f"ERROR: Unsupported file type: {ext}")
-        raise HTTPException(status_code=400, detail="Unsupported file type.")
-
-    try:
-        file_bytes = await file.read()
-        full_text = extract_text_from_file(file_bytes, filename)
-
-        # Normalize text: strip non-ASCII and normalize spacing
-        full_text = re.sub(r"[^\x00-\x7F]+", " ", full_text)
-        full_text = re.sub(r"\s{3,}", "\n\n", full_text)
-        full_text = full_text.strip()
-
-        print(f"DEBUG: File parsed successfully, length={len(full_text)}")
-    except Exception as e:
-        print(f"ERROR: File parsing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
-
-    if debug == "raw":
-        print("DEBUG: Returning raw extracted text preview")
-        return {
-            "filename": filename,
-            "extracted_text": full_text[:5000],
-            "length": len(full_text),
-        }
-
-    chunks = [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
-    if not chunks:
-        print("ERROR: No valid text chunks found after splitting")
-        raise HTTPException(status_code=400, detail="No valid text found in file.")
-
-    print(f"DEBUG: Number of chunks extracted: {len(chunks)}")
-
-    if debug == "chunks":
-        print("DEBUG: Returning chunk preview")
-        return {
-            "filename": filename,
-            "num_chunks": len(chunks),
-            "chunks": chunks[:30],
-        }
-
-    try:
-        result = await generate_flashcards_from_notes(
-            deck_id=deck_id,
-            notes=schemas.NoteChunks(chunks=chunks),
-            db=db,
-            current_user=current_user,
-        )
-        print(
-            f"DEBUG: Flashcards generated successfully, count={len(result.get('cards', []))}"
-        )
-        return result
-    except Exception as e:
-        print(f"ERROR during flashcard generation: {e}")
-        raise
