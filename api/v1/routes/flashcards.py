@@ -62,34 +62,41 @@ def parse_flashcard_response(text: str):
     return question, answer
 
 
-def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> str:
-    clean_slides = [s.strip() for s in slide_texts if s.strip()]
-    clean_notes = [n.strip() for n in notes_texts if n.strip()]
-
-    # Remove boilerplate phrases (customize if needed)
-    boilerplate_phrases = ["Click to add text", "Click to add title"]
-    clean_slides = [
-        line
-        for line in clean_slides
-        if all(bp not in line for bp in boilerplate_phrases)
-    ]
-    clean_notes = [
-        line
-        for line in clean_notes
-        if all(bp not in line for bp in boilerplate_phrases)
-    ]
-
-    text = ""
-    if clean_slides:
-        text += "\n\n[Slide Content]\n" + "\n\n".join(clean_slides)
-    if clean_notes:
-        text += "\n\n[Speaker Notes]\n" + "\n\n".join(clean_notes)
-
-    # Normalize multiple newlines to two newlines
-    text = re.sub(r"\n{3,}", "\n\n", text)
+# --- Helper: Clean math content and normalize spacing ---
+def _clean_math_text(text: str) -> str:
+    text = text.replace("×", "*").replace("−", "-").replace("•", "*")
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(
+        r"(?<=[\w)])\s*\n\s*(?=[\w(])", " ", text
+    )  # fix line breaks mid-equation
     return text.strip()
 
 
+# --- Helper: Remove boilerplate and flatten ---
+def _filter_and_clean(lines: list[str], boilerplate: list[str]) -> list[str]:
+    return [
+        _clean_math_text(line)
+        for line in lines
+        if line.strip() and not any(bp.lower() in line.lower() for bp in boilerplate)
+    ]
+
+
+# --- Text extractor for slides + notes ---
+def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> str:
+    boilerplate_phrases = ["Click to add text", "Click to add title"]
+    slides = _filter_and_clean(slide_texts, boilerplate_phrases)
+    notes = _filter_and_clean(notes_texts, boilerplate_phrases)
+
+    sections = []
+    if slides:
+        sections.append("[Slide Content]\n" + "\n\n".join(slides))
+    if notes:
+        sections.append("[Speaker Notes]\n" + "\n\n".join(notes))
+
+    return "\n\n".join(sections).strip()
+
+
+# --- Master extractor function ---
 def extract_text_from_file(file: bytes, filename: str) -> str:
     ext = filename.split(".")[-1].lower()
 
@@ -98,11 +105,20 @@ def extract_text_from_file(file: bytes, filename: str) -> str:
 
     elif ext == "pdf":
         reader = PdfReader(io.BytesIO(file))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
+        pages = []
+        for page in reader.pages:
+            content = page.extract_text()
+            if content:
+                content = _clean_math_text(content)
+                pages.append(content)
+        return "\n\n".join(pages)
 
     elif ext == "docx":
         doc = Document(io.BytesIO(file))
-        return "\n".join(p.text for p in doc.paragraphs)
+        paragraphs = [
+            _clean_math_text(p.text) for p in doc.paragraphs if p.text.strip()
+        ]
+        return "\n\n".join(paragraphs)
 
     elif ext == "md":
         return file.decode("utf-8")
@@ -112,25 +128,23 @@ def extract_text_from_file(file: bytes, filename: str) -> str:
         slide_texts = []
         notes_texts = []
         for slide in prs.slides:
-            # Extract slide shapes text
+            # Slide content
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text.strip():
-                    slide_texts.append(shape.text.strip())
+                    slide_texts.append(shape.text)
 
-            # Extract speaker notes if present
+            # Speaker notes
             if slide.has_notes_slide:
                 notes_slide = slide.notes_slide
-                notes_text = []
                 for shape in notes_slide.shapes:
                     if hasattr(shape, "text") and shape.text.strip():
-                        notes_text.append(shape.text.strip())
-                notes_texts.append("\n".join(notes_text))
+                        notes_texts.append(shape.text)
 
         return clean_and_structure_text(slide_texts, notes_texts)
 
     else:
         raise ValueError(
-            "Unsupported file type. Only .txt, .pdf, .docx, .md, .pptx allowed."
+            "Unsupported file type. Allowed: .txt, .pdf, .docx, .md, .pptx"
         )
 
 
