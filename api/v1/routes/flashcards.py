@@ -373,3 +373,74 @@ async def generate_flashcards_from_notes(
         "message": f"{len(flashcards_to_save)} flashcards generated and saved.",
         "cards": qa_pairs,
     }
+
+
+@flashcards.post("/decks/{deck_id}/generate-flashcards/")
+async def upload_notes_and_generate_flashcards(
+    deck_id: UUID,
+    file: UploadFile = File(...),
+    debug: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    print("DEBUG: Upload handler called ✅")
+
+    allowed_exts = {"txt", "pdf", "docx", "md", "pptx"}
+    filename = file.filename
+    ext = filename.split(".")[-1].lower()
+
+    if ext not in allowed_exts:
+        print(f"ERROR: Unsupported file type: {ext}")
+        raise HTTPException(status_code=400, detail="Unsupported file type.")
+
+    try:
+        file_bytes = await file.read()
+        full_text = extract_text_from_file(file_bytes, filename)
+
+        # Normalize text: strip non-ASCII and normalize spacing
+        full_text = re.sub(r"[^\x00-\x7F]+", " ", full_text)
+        full_text = re.sub(r"\s{3,}", "\n\n", full_text)
+        full_text = full_text.strip()
+
+        print(f"DEBUG: File parsed successfully, length={len(full_text)}")
+    except Exception as e:
+        print(f"ERROR: File parsing failed: {e}")
+        raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
+
+    if debug == "raw":
+        print("DEBUG: Returning raw extracted text preview")
+        return {
+            "filename": filename,
+            "extracted_text": full_text[:5000],
+            "length": len(full_text),
+        }
+
+    chunks = [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
+    if not chunks:
+        print("ERROR: No valid text chunks found after splitting")
+        raise HTTPException(status_code=400, detail="No valid text found in file.")
+
+    print(f"DEBUG: Number of chunks extracted: {len(chunks)}")
+
+    if debug == "chunks":
+        print("DEBUG: Returning chunk preview")
+        return {
+            "filename": filename,
+            "num_chunks": len(chunks),
+            "chunks": chunks[:30],
+        }
+
+    try:
+        result = await generate_flashcards_from_notes(
+            deck_id=deck_id,
+            notes=schemas.NoteChunks(chunks=chunks),
+            db=db,
+            current_user=current_user,
+        )
+        print(
+            f"DEBUG: Flashcards generated successfully, count={len(result.get('cards', []))}"
+        )
+        return result
+    except Exception as e:
+        print(f"ERROR during flashcard generation: {e}")
+        raise
