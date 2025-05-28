@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, Text, ForeignKey, TIMESTAMP, UUID, Integer
+from sqlalchemy import Column, Text, ForeignKey, TIMESTAMP, UUID, Integer, Boolean, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from api.db.database import Base  # Import Base from your database setup
@@ -20,6 +20,13 @@ class DeckCard(Base):
     source_chunk = Column(Text, nullable=True)
     chunk_index = Column(Integer, nullable=True)  # Optional: helpful for traceability
 
+    # Tracking + usage fields
+    is_bookmarked = Column(Boolean, default=False)
+    is_studied = Column(Boolean, default=False)
+    times_reviewed = Column(Integer, default=0)
+    correct_count = Column(Integer, default=0)
+    wrong_count = Column(Integer, default=0)
+    last_reviewed = Column(DateTime, nullable=True)
 
     deck = relationship("Deck", back_populates="cards")
     user = relationship("User")

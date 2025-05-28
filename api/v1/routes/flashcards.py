@@ -11,8 +11,8 @@ from PyPDF2 import PdfReader
 from docx import Document
 from typing import List, Optional
 from uuid import UUID
-import os, httpx, re, io, asyncio, time
-
+import os, httpx, re, io, asyncio, random
+from datetime import datetime
 
 flashcards = APIRouter(prefix="/flashcard", tags=["Flashcards"])
 model_util_endpoint = os.getenv("MODEL_UTILITY")
@@ -462,54 +462,54 @@ async def upload_notes_and_generate_flashcards(
             "length": len(full_text),
         }
     if ext == "pdf":
-            reader = PdfReader(io.BytesIO(file_bytes))
-            chunks = [
+        reader = PdfReader(io.BytesIO(file_bytes))
+        chunks = [
                 page.extract_text().strip()
                 for page in reader.pages
                 if page.extract_text() and page.extract_text().strip()
             ]
     elif ext == "pptx":
-            prs = Presentation(io.BytesIO(file_bytes))
-            chunks = []
-            for slide in prs.slides:
-                slide_texts = []
-                for shape in slide.shapes:
+        prs = Presentation(io.BytesIO(file_bytes))
+        chunks = []
+        for slide in prs.slides:
+            slide_texts = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    slide_texts.append(shape.text.strip())
+            if slide.has_notes_slide:
+                notes_slide = slide.notes_slide
+                notes_text = []
+                for shape in notes_slide.shapes:
                     if hasattr(shape, "text") and shape.text.strip():
-                        slide_texts.append(shape.text.strip())
-                if slide.has_notes_slide:
-                    notes_slide = slide.notes_slide
-                    notes_text = []
-                    for shape in notes_slide.shapes:
-                        if hasattr(shape, "text") and shape.text.strip():
-                            notes_text.append(shape.text.strip())
-                    slide_texts.append("\n".join(notes_text))
-                if slide_texts:
-                    chunks.append("\n".join(slide_texts).strip())
+                        notes_text.append(shape.text.strip())
+                slide_texts.append("\n".join(notes_text))
+            if slide_texts:
+                chunks.append("\n".join(slide_texts).strip())
     elif ext == "docx":
-            doc = Document(io.BytesIO(file_bytes))
-            chunks = [
+        doc = Document(io.BytesIO(file_bytes))
+        chunks = [
                 paragraph.text.strip()
                 for paragraph in doc.paragraphs
                 if paragraph.text and paragraph.text.strip()
             ]
     elif ext == "txt":
-            chunks = [
+        chunks = [
                 line.strip()
                 for line in full_text.splitlines()
                 if line.strip()
             ]
     else:
-            chunks = [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
+        chunks = [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
 
     if not chunks:
-            print("ERROR: No valid text chunks found after splitting")
-            raise HTTPException(status_code=400, detail="No valid text found in file.")
+        print("ERROR: No valid text chunks found after splitting")
+        raise HTTPException(status_code=400, detail="No valid text found in file.")
 
     print(f"DEBUG: Number of chunks extracted: {len(chunks)}")
 
     if debug == "chunks":
-            print("DEBUG: Returning chunk preview")
-            return {
+        print("DEBUG: Returning chunk preview")
+        return {
                 "filename": filename,
                 "num_chunks": len(chunks),
                 "chunks": chunks[:30],
@@ -528,3 +528,252 @@ async def upload_notes_and_generate_flashcards(
     except Exception as e:
         print(f"ERROR during flashcard generation: {e}")
         raise
+
+
+@flashcards.get("/decks/{deck_id}/practice")
+def get_random_flashcard(
+    deck_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cards = (
+        db.query(card_models.DeckCard)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .all()
+    )
+    if not cards:
+        raise HTTPException(status_code=404, detail="No flashcards found.")
+
+    selected = random.choice(cards)
+    return {
+        "card_id": selected.card_id,
+        "question": selected.card_with_answer.split("\n")[0][3:].strip(),  # after "Q: "
+    }
+
+
+@flashcards.get("/cards/{card_id}/reveal")
+def reveal_flashcard_answer(
+    card_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    card = (
+        db.query(card_models.DeckCard)
+        .filter_by(card_id=card_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="Flashcard not found.")
+
+    return {
+        "answer": card.card_with_answer.split("\n")[1][3:].strip(),  # after "A: "
+    }
+
+
+@flashcards.post("/cards/{card_id}/mark-studied")
+def mark_card_as_studied(
+    card_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    card = (
+        db.query(card_models.DeckCard)
+        .filter_by(card_id=card_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="Flashcard not found.")
+
+    card.is_studied = True
+    card.times_reviewed += 1
+    card.last_reviewed = datetime.utcnow()
+    db.commit()
+
+    return {"message": "Flashcard marked as studied."}
+
+
+@flashcards.post("/cards/{card_id}/bookmark")
+def toggle_bookmark_card(
+    card_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    card = (
+        db.query(card_models.DeckCard)
+        .filter_by(card_id=card_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="Flashcard not found.")
+
+    card.is_bookmarked = not card.is_bookmarked
+    db.commit()
+    return {
+        "message": f"Flashcard {'bookmarked' if card.is_bookmarked else 'unbookmarked'}."
+    }
+
+
+@flashcards.post("/cards/{card_id}/submit-response")
+def submit_flashcard_response(
+    card_id: UUID,
+    review: schemas.FlashcardReviewInput,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    card = (
+        db.query(card_models.DeckCard)
+        .filter_by(card_id=card_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="Flashcard not found.")
+
+    # Track response
+    card.times_reviewed += 1
+    card.last_reviewed = datetime.utcnow()
+    if review.is_correct:
+        card.correct_count += 1
+    else:
+        card.wrong_count += 1
+
+    db.commit()
+
+    return {
+        "message": "Response recorded.",
+        "card_id": str(card.card_id),
+        "correct": card.correct_count,
+        "wrong": card.wrong_count,
+        "times_reviewed": card.times_reviewed,
+    }
+
+
+@flashcards.get("/decks/{deck_id}/analytics")
+def get_deck_analytics(
+    deck_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cards = (
+        db.query(card_models.DeckCard)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .all()
+    )
+    if not cards:
+        raise HTTPException(
+            status_code=404, detail="No flashcards found for this deck."
+        )
+
+    total_cards = len(cards)
+    studied_cards = sum(1 for c in cards if c.is_studied)
+    total_reviews = sum(c.times_reviewed for c in cards)
+    correct_answers = sum(c.correct_count for c in cards)
+    wrong_answers = sum(c.wrong_count for c in cards)
+    total_attempts = correct_answers + wrong_answers
+    accuracy_percent = (
+        (correct_answers / total_attempts) * 100 if total_attempts else 0.0
+    )
+
+    return {
+        "deck_id": str(deck_id),
+        "total_cards": total_cards,
+        "studied_cards": studied_cards,
+        "total_reviews": total_reviews,
+        "correct_answers": correct_answers,
+        "wrong_answers": wrong_answers,
+        "accuracy_percent": round(accuracy_percent, 2),
+    }
+
+
+@flashcards.get("/decks/{deck_id}/quiz", response_model=schemas.QuizStartResponse)
+def start_quiz(
+    deck_id: UUID,
+    num_questions: int = 5,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cards = (
+        db.query(card_models.DeckCard)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .all()
+    )
+    if not cards:
+        raise HTTPException(status_code=404, detail="No flashcards found.")
+
+    if len(cards) < num_questions:
+        num_questions = len(cards)
+
+    selected = random.sample(cards, num_questions)
+
+    quiz_cards = []
+    for card in selected:
+        question = card.card_with_answer.split("\n")[0][3:].strip()  # after 'Q: '
+        quiz_cards.append(schemas.QuizCard(card_id=card.card_id, question=question))
+
+    return {"deck_id": deck_id, "cards": quiz_cards}
+
+
+@flashcards.post("/quiz/submit", response_model=schemas.QuizResults)
+def submit_quiz(
+    answers: List[schemas.QuizSubmission],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    correct = 0
+    wrong = 0
+    detailed = []
+
+    for submission in answers:
+        card = (
+            db.query(card_models.DeckCard)
+            .filter_by(card_id=submission.card_id, user_id=current_user.user_id)
+            .first()
+        )
+        if not card:
+            detailed.append(
+                {
+                    "card_id": submission.card_id,
+                    "correct": False,
+                    "error": "Card not found",
+                }
+            )
+            wrong += 1
+            continue
+
+        # Get correct answer from card
+        try:
+            correct_answer = card.card_with_answer.split("\n")[1][
+                3:
+            ].strip()  # after 'A: '
+        except IndexError:
+            correct_answer = ""
+
+        is_correct = submission.user_answer.strip().lower() == correct_answer.lower()
+
+        # Update tracking
+        card.times_reviewed += 1
+        if is_correct:
+            card.correct_count += 1
+            correct += 1
+        else:
+            card.wrong_count += 1
+            wrong += 1
+
+        card.last_reviewed = datetime.utcnow()
+
+        detailed.append(
+            {
+                "card_id": str(card.card_id),
+                "your_answer": submission.user_answer,
+                "correct_answer": correct_answer,
+                "correct": is_correct,
+            }
+        )
+
+    db.commit()
+
+    return {
+        "total_questions": len(answers),
+        "correct": correct,
+        "wrong": wrong,
+        "detailed_results": detailed,
+    }
