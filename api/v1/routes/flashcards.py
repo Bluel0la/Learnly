@@ -414,22 +414,59 @@ async def upload_notes_and_generate_flashcards(
             "extracted_text": full_text[:5000],
             "length": len(full_text),
         }
+    if ext == "pdf":
+            reader = PdfReader(io.BytesIO(file_bytes))
+            chunks = [
+                page.extract_text().strip()
+                for page in reader.pages
+                if page.extract_text() and page.extract_text().strip()
+            ]
+    elif ext == "pptx":
+            prs = Presentation(io.BytesIO(file_bytes))
+            chunks = []
+            for slide in prs.slides:
+                slide_texts = []
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text.strip():
+                        slide_texts.append(shape.text.strip())
+                if slide.has_notes_slide:
+                    notes_slide = slide.notes_slide
+                    notes_text = []
+                    for shape in notes_slide.shapes:
+                        if hasattr(shape, "text") and shape.text.strip():
+                            notes_text.append(shape.text.strip())
+                    slide_texts.append("\n".join(notes_text))
+                if slide_texts:
+                    chunks.append("\n".join(slide_texts).strip())
+    elif ext == "docx":
+            doc = Document(io.BytesIO(file_bytes))
+            chunks = [
+                paragraph.text.strip()
+                for paragraph in doc.paragraphs
+                if paragraph.text and paragraph.text.strip()
+            ]
+    elif ext == "txt":
+            chunks = [
+                line.strip()
+                for line in full_text.splitlines()
+                if line.strip()
+            ]
+    else:
+            chunks = [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
 
-    chunks = [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
     if not chunks:
-        print("ERROR: No valid text chunks found after splitting")
-        raise HTTPException(status_code=400, detail="No valid text found in file.")
+            print("ERROR: No valid text chunks found after splitting")
+            raise HTTPException(status_code=400, detail="No valid text found in file.")
 
     print(f"DEBUG: Number of chunks extracted: {len(chunks)}")
 
     if debug == "chunks":
-        print("DEBUG: Returning chunk preview")
-        return {
-            "filename": filename,
-            "num_chunks": len(chunks),
-            "chunks": chunks[:30],
-        }
-
+            print("DEBUG: Returning chunk preview")
+            return {
+                "filename": filename,
+                "num_chunks": len(chunks),
+                "chunks": chunks[:30],
+            }
     try:
         result = await generate_flashcards_from_notes(
             deck_id=deck_id,
