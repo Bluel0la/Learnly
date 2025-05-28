@@ -242,49 +242,38 @@ async def generate_flashcards_from_notes(
         )
 
     # Step 3: Generate flashcards in parallel
+
+
     async def generate_card(point: str, index: int):
-        print(f"\n🔹 Generating flashcard for point {index+1}")
+        print(f"🔹 Processing key point {index+1}: {point[:200]}...")
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
                 resp = await client.post(flashcard_url, json={"prompt": point})
             resp.raise_for_status()
+            response_data = resp.json()
+            print(f"🔸 Full response JSON for point {index+1}: {response_data}")
 
-            raw_text = resp.json().get("response", "")
-            print(f"🔸 Raw response:\n{raw_text}\n")
+            # Handle structured JSON response
+            question = response_data.get("question", "").strip()
+            answer = response_data.get("answer", "").strip()
 
-            # Improved regex patterns for Q/A extraction (non-greedy matching)
-            patterns = [
-                r"Q:\s*(.+?)\s*A:\s*(.+)",              # Q: ... A: ...
-                r"Question:\s*(.+?)\s*Answer:\s*(.+)",  # Question: ... Answer: ...
-                r"Question\s*-\s*(.+?)\s*Answer\s*-\s*(.+)",  # Question - ... Answer - ...
-            ]
-
-            match = None
-            for pat in patterns:
-                match = re.search(pat, raw_text, re.DOTALL | re.IGNORECASE)
-                if match:
-                    break
-
-            if not match:
-                print(f"❌ Pattern mismatch. Skipping this raw output:\n{raw_text[:300]}")
+            if not question or not answer:
+                print(f"❌ Invalid Q/A pair for point {index+1}: Q={question}, A={answer}")
                 return None
 
-            question = match.group(1).strip()
-            answer = match.group(2).strip()
-
-            # Basic validation - reject empty or placeholder content
-            if question.lower() in {"n/a", "", "none"} or answer.lower() in {"n/a", "", "none"}:
-                print("❌ Invalid Q/A pair detected. Skipping.")
+            # Relaxed validation
+            if len(question) < 5 or len(answer) < 5:
+                print(
+                    f"❌ Q/A pair too short for point {index+1}: Q={question}, A={answer}"
+                )
                 return None
 
-            print(f"🔹 Final Flashcard:\nQ: {question}\nA: {answer}\n")
-
+            print(f"✅ Valid flashcard for point {index+1}:\nQ: {question}\nA: {answer}\n")
             return {"question": question, "answer": answer}
 
         except Exception as e:
-            print(f"❌ Flashcard generation failed: {str(e)}")
+            print(f"❌ Flashcard generation failed for point {index+1}: {str(e)}")
             return None
-
     results = await asyncio.gather(
         *[generate_card(p, i) for i, p in enumerate(key_points)]
     )
@@ -309,7 +298,8 @@ async def generate_flashcards_from_notes(
         "message": f"{len(flashcards_to_save)} flashcards generated and saved.",
         "cards": qa_pairs,
     }
-    
+
+
 @flashcards.post("/decks/{deck_id}/generate-flashcards/")
 async def upload_notes_and_generate_flashcards(
     deck_id: UUID,
