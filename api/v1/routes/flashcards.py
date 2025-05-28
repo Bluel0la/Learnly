@@ -261,6 +261,7 @@ async def generate_flashcards_from_notes(
 async def generate_flashcards_from_notes(
     deck_id: UUID,
     notes: schemas.NoteChunks,
+    num_flashcards: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -296,26 +297,39 @@ async def generate_flashcards_from_notes(
     # Step 3: Clean key points
     cleaned_key_points = []
     for point in key_points:
-        # Remove preamble
         point = re.sub(
             r"Here are the key educational insights.*?:\s*",
             "",
             point,
             flags=re.IGNORECASE,
         )
-        # Remove numbered prefixes (e.g., "1.", "2.")
         point = re.sub(r"^\d+\.\s*", "", point).strip()
         if point:
             cleaned_key_points.append(point)
+    if len(cleaned_key_points) < len(key_points):
+        print(f"⚠️ Warning: {len(key_points) - len(cleaned_key_points)} key points filtered out during cleaning")
     print(f"🔹 Cleaned key points: {cleaned_key_points}")
 
-    # Step 4: Generate flashcards in parallel
+    # Step 4: Limit key points to requested number of flashcards
+    cleaned_key_points = cleaned_key_points[:num_flashcards]
+    print(f"🔹 Processing up to {num_flashcards} key points: {cleaned_key_points}")
+
+    # Step 5: Check flashcard endpoint availability
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            resp = await client.get(flashcard_url)  # Adjust if GET isn't supported
+        resp.raise_for_status()
+        print("✅ Flashcard endpoint is available")
+    except Exception as e:
+        print(f"⚠️ Warning: Flashcard endpoint health check failed: {type(e).__name__}: {str(e)}")
+
+    # Step 6: Generate flashcards in batches
     async def generate_card(point: str, index: int, semaphore: asyncio.Semaphore):
         print(f"🔹 Processing key point {index+1}: {point[:200]}...")
         for attempt in range(3):  # Retry up to 3 times
             try:
                 async with semaphore:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0)) as client:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
                         resp = await client.post(flashcard_url, json={"prompt": point})
                     resp.raise_for_status()
                 response_data = resp.json()
@@ -326,12 +340,12 @@ async def generate_flashcards_from_notes(
 
                 if not question or not answer:
                     print(
-                        f"❌ Invalid Q/A pair for point {index+1}: Q={question}, A={answer}"
+                        f"❌ Invalid Q/A pair for point {index+1}: Q={question}, A={answer}, Point: {point}"
                     )
                     return None
 
                 if len(question) < 5:
-                    print(f"❌ Question too short for point {index+1}: Q={question}")
+                    print(f"❌ Question too short for point {index+1}: Q={question}, Point: {point}")
                     return None
 
                 print(
@@ -341,37 +355,56 @@ async def generate_flashcards_from_notes(
 
             except httpx.HTTPStatusError as e:
                 print(
-                    f"❌ HTTP error for point {index+1}, attempt {attempt+1}: {str(e)}, Status: {e.response.status_code}"
+                    f"❌ HTTP error for point {index+1}, attempt {attempt+1}: {type(e).__name__}: {str(e)}, Status: {e.response.status_code}, Point: {point}"
                 )
                 if attempt == 2:
                     return None
-                await asyncio.sleep(1)
+                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
             except httpx.RequestError as e:
                 print(
-                    f"❌ Network error for point {index+1}, attempt {attempt+1}: {str(e)}"
+                    f"❌ Network error for point {index+1}, attempt {attempt+1}: {type(e).__name__}: {str(e)}, Point: {point}"
                 )
                 if attempt == 2:
                     return None
-                await asyncio.sleep(1)
+                await asyncio.sleep(2 ** attempt)
             except Exception as e:
                 print(
-                    f"❌ Unexpected error for point {index+1}, attempt {attempt+1}: {str(e)}, Response: {locals().get('response_data', 'No response')}"
+                    f"❌ Unexpected error for point {index+1}, attempt {attempt+1}: {type(e).__name__}: {str(e)}, Response: {locals().get('response_data', 'No response')}, Point: {point}"
                 )
                 return None
         return None
 
-    results = await asyncio.gather(
-        *[
-            generate_card(p, i, asyncio.Semaphore(3))
-            for i, p in enumerate(cleaned_key_points)
-        ]
-    )
-    qa_pairs = [qa for qa in results if qa]
+    # Process key points in batches
+    batch_size = 3
+    batch_delay = 2  # seconds
+    qa_pairs = []
+    for i in range(0, len(cleaned_key_points), batch_size):
+        batch = cleaned_key_points[i:i + batch_size]
+        print(f"🔹 Processing batch {i//batch_size + 1} with {len(batch)} key points")
+        results = await asyncio.gather(
+            *[
+                generate_card(p, i + j, asyncio.Semaphore(2))  # Limit to 2 concurrent requests per batch
+                for j, p in enumerate(batch)
+            ]
+        )
+        batch_qa_pairs = [qa for qa in results if qa]
+        qa_pairs.extend(batch_qa_pairs)
+        print(f"🔹 Batch {i//batch_size + 1} completed: {len(batch_qa_pairs)} flashcards generated")
+        if i + batch_size < len(cleaned_key_points):
+            print(f"🔹 Waiting {batch_delay} seconds before next batch")
+            await asyncio.sleep(batch_delay)
 
     if not qa_pairs:
-        raise HTTPException(status_code=400, detail="No valid Q&A pairs generated.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"No valid flashcards generated for {num_flashcards} requested."
+        )
+    if len(qa_pairs) < num_flashcards:
+        print(
+            f"⚠️ Warning: Generated {len(qa_pairs)} flashcards, fewer than {num_flashcards} requested"
+        )
 
-    # Step 5: Save flashcards to database
+    # Step 7: Save flashcards to database
     flashcards_to_save = [
         card_models.DeckCard(
             deck_id=deck_id,
@@ -384,7 +417,7 @@ async def generate_flashcards_from_notes(
     db.commit()
 
     return {
-        "message": f"{len(flashcards_to_save)} flashcards generated and saved.",
+        "message": f"{len(flashcards_to_save)} of {num_flashcards} requested flashcards generated and saved.",
         "cards": qa_pairs,
     }
 
