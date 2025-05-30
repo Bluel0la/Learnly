@@ -25,6 +25,7 @@ class CardCreate(BaseModel):
 class AddCards(BaseModel):
     cards: List[CardCreate]
 
+
 class DeckCardOut(BaseModel):
     card_id: UUID
     deck_id: UUID
@@ -35,6 +36,9 @@ class DeckCardOut(BaseModel):
     correct_count: int
     wrong_count: int
     last_reviewed: Optional[datetime]
+    source_summary: Optional[str]
+    source_chunk: Optional[str]
+    chunk_index: Optional[int]
 
     class Config:
         orm_mode = True
@@ -42,6 +46,11 @@ class DeckCardOut(BaseModel):
 
 class FlashcardReviewInput(BaseModel):
     is_correct: bool
+
+
+class CardActionResponse(BaseModel):
+    card_id: UUID
+    message: str
 
 
 class NoteChunks(BaseModel):
@@ -71,10 +80,18 @@ class QuizStartResponse(BaseModel):
 class QuizSubmission(BaseModel):
     card_id: UUID
     user_answer: str
+    is_correct: bool
+
+
+class QuizResultDetail(BaseModel):
+    card_id: UUID
+    your_answer: str
+    correct_answer: str
+    correct: bool
 
 
 class QuizResults(BaseModel):
     total_questions: int
     correct: int
     wrong: int
-    detailed_results: List[dict]
+    detailed_results: List[QuizResultDetail]

@@ -5,6 +5,7 @@ from api.v1.schemas import flashcards as schemas
 from api.v1.models import deck as models
 from api.v1.models.user import User
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from api.db.database import get_db
 from pptx import Presentation
 from PyPDF2 import PdfReader
@@ -19,60 +20,51 @@ model_util_endpoint = os.getenv("MODEL_UTILITY")
 model_chat_endpoint = os.getenv("MODEL_ENDPOINT")
 
 
-# 🔧 Helper: Parse LLM response
+# --- 🔧 Flashcard Parser ---
 def parse_flashcard_response(text: str):
     text = text.strip()
 
-    # Pre-clean conversational preambles
+    # Remove preambles like "Sure, here's a flashcard:"
     text = re.sub(
         r"^.*?(?=\bQuestion\s*:)", "", text, flags=re.IGNORECASE | re.DOTALL
     ).strip()
 
-    # Regex extraction
     question_match = re.search(
         r"Question\s*[:：]\s*(.+?)\s*(?=Answer\s*[:：])",
         text,
         re.IGNORECASE | re.DOTALL,
     )
-    answer_match = re.search(
-        r"Answer\s*[:：]\s*(.+)",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
+    answer_match = re.search(r"Answer\s*[:：]\s*(.+)", text, re.IGNORECASE | re.DOTALL)
 
     if question_match and answer_match:
-        question = question_match.group(1).strip()
-        answer = answer_match.group(1).strip()
-        return question, answer
+        return question_match.group(1).strip(), answer_match.group(1).strip()
 
-    # Fallback
+    # Fallback logic
     lines = text.splitlines()
     if len(lines) == 1:
-        sentence_split = re.split(r"[:：]", lines[0], maxsplit=1)
-        if len(sentence_split) == 2:
-            return sentence_split[0].strip() + "?", sentence_split[1].strip()
-        else:
-            return "What is this about?", lines[0]
+        parts = re.split(r"[:：]", lines[0], maxsplit=1)
+        if len(parts) == 2:
+            return parts[0].strip() + "?", parts[1].strip()
+        return "What is this about?", lines[0].strip()
 
-    # More than one line fallback
-    first_line = lines[0]
-    remaining = " ".join(lines[1:]).strip()
-    question = first_line.rstrip(":：.") + "?"
-    answer = remaining if remaining else "N/A"
+    question = lines[0].rstrip(":：.") + "?"
+    answer = " ".join(lines[1:]).strip() or "N/A"
     return question, answer
 
 
-# --- Helper: Clean math content and normalize spacing ---
+# --- 🧠 Math-aware Text Cleaner ---
 def _clean_math_text(text: str) -> str:
     text = text.replace("×", "*").replace("−", "-").replace("•", "*")
-    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\s{2,}", " ", text)  # Excess spaces
     text = re.sub(
         r"(?<=[\w)])\s*\n\s*(?=[\w(])", " ", text
-    )  # fix line breaks mid-equation
+    )  # Mid-expression line breaks
+    if re.search(r"[=+*/^√λπ]", text):  # Optional: Tag math content
+        text = "[MATH] " + text
     return text.strip()
 
 
-# --- Helper: Remove boilerplate and flatten ---
+# --- 📦 Boilerplate Filter ---
 def _filter_and_clean(lines: list[str], boilerplate: list[str]) -> list[str]:
     return [
         _clean_math_text(line)
@@ -81,7 +73,7 @@ def _filter_and_clean(lines: list[str], boilerplate: list[str]) -> list[str]:
     ]
 
 
-# --- Text extractor for slides + notes ---
+# --- 🧾 Slide + Notes Structuring ---
 def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> str:
     boilerplate_phrases = ["Click to add text", "Click to add title"]
     slides = _filter_and_clean(slide_texts, boilerplate_phrases)
@@ -96,12 +88,13 @@ def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> 
     return "\n\n".join(sections).strip()
 
 
-# --- Master extractor function ---
+# --- 🗂️ Master File Extraction Handler ---
 def extract_text_from_file(file: bytes, filename: str) -> str:
     ext = filename.split(".")[-1].lower()
+    print(f"[Extractor] Processing {filename} (.{ext})")
 
-    if ext == "txt":
-        return file.decode("utf-8")
+    if ext == "txt" or ext == "md":
+        content = file.decode("utf-8")
 
     elif ext == "pdf":
         reader = PdfReader(io.BytesIO(file))
@@ -109,52 +102,97 @@ def extract_text_from_file(file: bytes, filename: str) -> str:
         for page in reader.pages:
             content = page.extract_text()
             if content:
-                content = _clean_math_text(content)
-                pages.append(content)
-        return "\n\n".join(pages)
+                pages.append(_clean_math_text(content))
+        content = "\n\n".join(pages)
 
     elif ext == "docx":
         doc = Document(io.BytesIO(file))
         paragraphs = [
             _clean_math_text(p.text) for p in doc.paragraphs if p.text.strip()
         ]
-        return "\n\n".join(paragraphs)
-
-    elif ext == "md":
-        return file.decode("utf-8")
+        content = "\n\n".join(paragraphs)
 
     elif ext == "pptx":
         prs = Presentation(io.BytesIO(file))
-        slide_texts = []
-        notes_texts = []
+        slide_texts, notes_texts = [], []
         for slide in prs.slides:
-            # Slide content
             for shape in slide.shapes:
                 if hasattr(shape, "text") and shape.text.strip():
                     slide_texts.append(shape.text)
-
-            # Speaker notes
             if slide.has_notes_slide:
-                notes_slide = slide.notes_slide
-                for shape in notes_slide.shapes:
+                for shape in slide.notes_slide.shapes:
                     if hasattr(shape, "text") and shape.text.strip():
                         notes_texts.append(shape.text)
-
-        return clean_and_structure_text(slide_texts, notes_texts)
+        content = clean_and_structure_text(slide_texts, notes_texts)
 
     else:
         raise ValueError(
             "Unsupported file type. Allowed: .txt, .pdf, .docx, .md, .pptx"
         )
 
+    content = content.strip()
+    if not content:
+        raise HTTPException(
+            status_code=400, detail="File appears to be empty or unsupported."
+        )
 
-# ✅ Create a deck
+    return content
+
+
+def chunk_file_by_type(ext: str, file_bytes: bytes, full_text: str) -> list[str]:
+    if ext == "pdf":
+        reader = PdfReader(io.BytesIO(file_bytes))
+        return [
+            page.extract_text().strip()
+            for page in reader.pages
+            if page.extract_text() and page.extract_text().strip()
+        ]
+
+    elif ext == "pptx":
+        prs = Presentation(io.BytesIO(file_bytes))
+        chunks = []
+        for slide in prs.slides:
+            slide_texts = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    slide_texts.append(shape.text.strip())
+            if slide.has_notes_slide:
+                notes_text = [
+                    shape.text.strip()
+                    for shape in slide.notes_slide.shapes
+                    if hasattr(shape, "text") and shape.text.strip()
+                ]
+                slide_texts.append("\n".join(notes_text))
+            if slide_texts:
+                chunks.append("\n".join(slide_texts).strip())
+        return chunks
+
+    elif ext == "docx":
+        doc = Document(io.BytesIO(file_bytes))
+        return [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+
+    elif ext == "txt":
+        return [line.strip() for line in full_text.splitlines() if line.strip()]
+
+    return [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
+
+
 @flashcards.post("/decks/", response_model=schemas.DeckOut)
 def create_deck(
     deck: schemas.DeckCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    existing = (
+        db.query(models.Deck)
+        .filter_by(user_id=current_user.user_id, title=deck.title)
+        .first()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=400, detail="A deck with this title already exists."
+        )
+
     db_deck = models.Deck(title=deck.title, user_id=current_user.user_id)
     db.add(db_deck)
     db.commit()
@@ -162,13 +200,41 @@ def create_deck(
     return db_deck
 
 
-# ✅ Get all decks for the current user
 @flashcards.get("/decks/", response_model=List[schemas.DeckOut])
 def get_user_decks(
+    include_card_count: Optional[bool] = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return db.query(models.Deck).filter_by(user_id=current_user.user_id).all()
+    if not include_card_count:
+        return db.query(models.Deck).filter_by(user_id=current_user.user_id).all()
+
+    # With card count annotation
+    decks = (
+        db.query(
+            models.Deck.deck_id,
+            models.Deck.title,
+            models.Deck.date_created,
+            func.count(card_models.DeckCard.card_id).label("card_count"),
+        )
+        .outerjoin(
+            card_models.DeckCard, models.Deck.deck_id == card_models.DeckCard.deck_id
+        )
+        .filter(models.Deck.user_id == current_user.user_id)
+        .group_by(models.Deck.deck_id)
+        .all()
+    )
+
+    # Optional: add to DeckOut schema if you want to show `card_count` in response
+    return [
+        {
+            "deck_id": deck.deck_id,
+            "title": deck.title,
+            "date_created": deck.date_created,
+            "card_count": deck.card_count,
+        }
+        for deck in decks
+    ]
 
 
 # ✅ Add flashcards to a specific deck
@@ -187,6 +253,14 @@ def add_cards_to_deck(
     if not db_deck:
         raise HTTPException(status_code=404, detail="Deck not found.")
 
+    # Validate each card format (optional strictness)
+    for card in payload.cards:
+        if "Q:" not in card.card_with_answer or "A:" not in card.card_with_answer:
+            raise HTTPException(
+                status_code=422,
+                detail="Each card must contain both 'Q:' and 'A:' format lines.",
+            )
+
     cards = [
         card_models.DeckCard(
             deck_id=deck_id,
@@ -197,65 +271,33 @@ def add_cards_to_deck(
     ]
     db.add_all(cards)
     db.commit()
-    return {"message": f"{len(cards)} cards added successfully."}
+
+    return {
+        "message": f"{len(cards)} cards added successfully.",
+        "card_ids": [card.card_id for card in cards],
+    }
 
 
 # ✅ Get all cards in a specific deck
-@flashcards.get("/decks/{deck_id}/cards/", response_model=List[schemas.DeckCardOut])
-def get_cards_in_deck(
+@flashcards.get("/decks/{deck_id}/cards", response_model=List[schemas.DeckCardOut])
+def get_deck_cards(
     deck_id: UUID,
+    shuffle: bool = False,
+    only_unstudied: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    deck = (
-        db.query(models.Deck)
-        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
-        .first()
+    query = db.query(card_models.DeckCard).filter_by(
+        deck_id=deck_id, user_id=current_user.user_id
     )
-    if not deck:
-        raise HTTPException(status_code=404, detail="Deck not found.")
-    return db.query(card_models.DeckCard).filter_by(deck_id=deck_id).all()
+    if only_unstudied:
+        query = query.filter_by(is_studied=False)
 
+    cards = query.all()
+    if shuffle:
+        random.shuffle(cards)
 
-async def generate_flashcards_from_notes(
-    deck_id: UUID,
-    notes: schemas.NoteChunks,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    flashcard_url = f"{model_chat_endpoint}/flashcard"
-    summarization_url = f"{model_util_endpoint}/flashcard-summarization"
-
-    # Step 1: Validate deck ownership
-    db_deck = (
-        db.query(models.Deck)
-        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
-        .first()
-    )
-    if not db_deck:
-        raise HTTPException(status_code=404, detail="Deck not found.")
-
-    # Step 2: Summarize note chunks
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            summary_resp = await client.post(
-                summarization_url, json={"chunks": notes.chunks}
-            )
-        summary_resp.raise_for_status()
-        key_points = summary_resp.json().get("points", [])
-
-        print("✅ Summary received")
-        for i, p in enumerate(key_points):
-            print(f"Point {i+1}: {p[:200]}...\n")
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
-
-    if not key_points:
-        raise HTTPException(
-            status_code=400, detail="No key points returned from summarization."
-        )
-
-    # Step 3: Generate flashcards in parallel
+    return cards
 
 
 async def generate_flashcards_from_notes(
@@ -268,157 +310,83 @@ async def generate_flashcards_from_notes(
     flashcard_url = f"{model_chat_endpoint}/flashcard"
     summarization_url = f"{model_util_endpoint}/flashcard-summarization"
 
-    # Step 1: Validate deck ownership
-    db_deck = (
-        db.query(models.Deck)
-        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
-        .first()
-    )
+    db_deck = db.query(models.Deck).filter_by(deck_id=deck_id, user_id=current_user.user_id).first()
     if not db_deck:
         raise HTTPException(status_code=404, detail="Deck not found.")
 
-    # Step 2: Summarize note chunks
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            summary_resp = await client.post(
-                summarization_url, json={"chunks": notes.chunks}
-            )
+            summary_resp = await client.post(summarization_url, json={"chunks": notes.chunks})
         summary_resp.raise_for_status()
         key_points = summary_resp.json().get("points", [])
-        print(f"✅ Summary received, {len(key_points)} key points: {key_points}")
     except httpx.HTTPError as e:
         raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
 
     if not key_points:
-        raise HTTPException(
-            status_code=400, detail="No key points returned from summarization."
-        )
+        raise HTTPException(status_code=400, detail="No key points returned from summarization.")
 
-    # Step 3: Clean key points
-    cleaned_key_points = []
-    for point in key_points:
-        point = re.sub(
-            r"Here are the key educational insights.*?:\s*",
-            "",
-            point,
-            flags=re.IGNORECASE,
-        )
-        point = re.sub(r"^\d+\.\s*", "", point).strip()
-        if point:
-            cleaned_key_points.append(point)
-    if len(cleaned_key_points) < len(key_points):
-        print(f"⚠️ Warning: {len(key_points) - len(cleaned_key_points)} key points filtered out during cleaning")
-    print(f"🔹 Cleaned key points: {cleaned_key_points}")
+    # 🧼 Clean key points
+    cleaned_key_points = [
+        re.sub(r"^\d+\.\s*", "", re.sub(r"Here are.*?:", "", point)).strip()
+        for point in key_points
+        if point.strip()
+    ][:num_flashcards]
 
-    # Step 4: Limit key points to requested number of flashcards
-    cleaned_key_points = cleaned_key_points[:num_flashcards]
-    print(f"🔹 Processing up to {num_flashcards} key points: {cleaned_key_points}")
+    if not cleaned_key_points:
+        raise HTTPException(status_code=400, detail="No valid key points to process.")
 
-    # Step 5: Check flashcard endpoint availability
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-            resp = await client.get(flashcard_url)  # Adjust if GET isn't supported
-        resp.raise_for_status()
-        print("✅ Flashcard endpoint is available")
-    except Exception as e:
-        print(f"⚠️ Warning: Flashcard endpoint health check failed: {type(e).__name__}: {str(e)}")
-
-    # Step 6: Generate flashcards in batches
+    # 🔁 Generate flashcards
     async def generate_card(point: str, index: int, semaphore: asyncio.Semaphore):
-        print(f"🔹 Processing key point {index+1}: {point[:200]}...")
-        for attempt in range(3):  # Retry up to 3 times
+        for attempt in range(3):
             try:
                 async with semaphore:
                     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
                         resp = await client.post(flashcard_url, json={"prompt": point})
-                    resp.raise_for_status()
+                resp.raise_for_status()
                 response_data = resp.json()
-                print(f"🔸 Full response JSON for point {index+1}: {response_data}")
-
                 question = response_data.get("question", "").strip()
                 answer = response_data.get("answer", "").strip()
-
-                if not question or not answer:
-                    print(
-                        f"❌ Invalid Q/A pair for point {index+1}: Q={question}, A={answer}, Point: {point}"
-                    )
-                    return None
-
-                if len(question) < 5:
-                    print(f"❌ Question too short for point {index+1}: Q={question}, Point: {point}")
-                    return None
-
-                print(
-                    f"✅ Valid flashcard for point {index+1}:\nQ: {question}\nA: {answer}\n"
-                )
-                return {"question": question, "answer": answer}
-
-            except httpx.HTTPStatusError as e:
-                print(
-                    f"❌ HTTP error for point {index+1}, attempt {attempt+1}: {type(e).__name__}: {str(e)}, Status: {e.response.status_code}, Point: {point}"
-                )
-                if attempt == 2:
-                    return None
-                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
-            except httpx.RequestError as e:
-                print(
-                    f"❌ Network error for point {index+1}, attempt {attempt+1}: {type(e).__name__}: {str(e)}, Point: {point}"
-                )
-                if attempt == 2:
-                    return None
+                if question and answer and len(question) > 5:
+                    return {"question": question, "answer": answer}
+            except Exception:
                 await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                print(
-                    f"❌ Unexpected error for point {index+1}, attempt {attempt+1}: {type(e).__name__}: {str(e)}, Response: {locals().get('response_data', 'No response')}, Point: {point}"
-                )
-                return None
         return None
 
-    # Process key points in batches
-    batch_size = 3
-    batch_delay = 2  # seconds
     qa_pairs = []
+    batch_size = 3
+    semaphore = asyncio.Semaphore(2)
     for i in range(0, len(cleaned_key_points), batch_size):
         batch = cleaned_key_points[i:i + batch_size]
-        print(f"🔹 Processing batch {i//batch_size + 1} with {len(batch)} key points")
-        results = await asyncio.gather(
-            *[
-                generate_card(p, i + j, asyncio.Semaphore(2))  # Limit to 2 concurrent requests per batch
-                for j, p in enumerate(batch)
-            ]
-        )
-        batch_qa_pairs = [qa for qa in results if qa]
-        qa_pairs.extend(batch_qa_pairs)
-        print(f"🔹 Batch {i//batch_size + 1} completed: {len(batch_qa_pairs)} flashcards generated")
-        if i + batch_size < len(cleaned_key_points):
-            print(f"🔹 Waiting {batch_delay} seconds before next batch")
-            await asyncio.sleep(batch_delay)
+        results = await asyncio.gather(*[generate_card(p, i + j, semaphore) for j, p in enumerate(batch)])
+        qa_pairs.extend([qa for qa in results if qa])
+        await asyncio.sleep(2)  # throttle between batches
 
     if not qa_pairs:
-        raise HTTPException(
-            status_code=400,
-            detail=f"No valid flashcards generated for {num_flashcards} requested."
-        )
+        raise HTTPException(status_code=400, detail="No valid flashcards generated.")
     if len(qa_pairs) < num_flashcards:
-        print(
-            f"⚠️ Warning: Generated {len(qa_pairs)} flashcards, fewer than {num_flashcards} requested"
+        print(f"⚠️ Only {len(qa_pairs)} out of {num_flashcards} flashcards generated.")
+
+    flashcards_to_save = []
+    for i, qa in enumerate(qa_pairs):
+        flashcards_to_save.append(
+            card_models.DeckCard(
+                deck_id=deck_id,
+                user_id=current_user.user_id,
+                card_with_answer=f"Q: {qa['question']}\nA: {qa['answer']}",
+                source_summary=cleaned_key_points[i] if i < len(cleaned_key_points) else None,
+                source_chunk=notes.chunks[i] if i < len(notes.chunks) else None,
+                chunk_index=i
+            )
         )
 
-    # Step 7: Save flashcards to database
-    flashcards_to_save = [
-        card_models.DeckCard(
-            deck_id=deck_id,
-            user_id=current_user.user_id,
-            card_with_answer=f"Q: {qa['question']}\nA: {qa['answer']}",
-        )
-        for qa in qa_pairs
-    ]
     db.bulk_save_objects(flashcards_to_save)
     db.commit()
 
     return {
-        "message": f"{len(flashcards_to_save)} of {num_flashcards} requested flashcards generated and saved.",
+        "message": f"{len(qa_pairs)} of {num_flashcards} flashcards generated and saved.",
         "cards": qa_pairs,
+        "summary_points": cleaned_key_points,
+        "status": "success",
     }
 
 
@@ -426,134 +394,98 @@ async def generate_flashcards_from_notes(
 async def upload_notes_and_generate_flashcards(
     deck_id: UUID,
     file: UploadFile = File(...),
+    num_flashcards: int = 5,
     debug: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    print("DEBUG: Upload handler called ✅")
-
     allowed_exts = {"txt", "pdf", "docx", "md", "pptx"}
     filename = file.filename
     ext = filename.split(".")[-1].lower()
 
     if ext not in allowed_exts:
-        print(f"ERROR: Unsupported file type: {ext}")
         raise HTTPException(status_code=400, detail="Unsupported file type.")
 
     try:
         file_bytes = await file.read()
         full_text = extract_text_from_file(file_bytes, filename)
-
-        # Normalize text: strip non-ASCII and normalize spacing
         full_text = re.sub(r"[^\x00-\x7F]+", " ", full_text)
-        full_text = re.sub(r"\s{3,}", "\n\n", full_text)
-        full_text = full_text.strip()
-
-        print(f"DEBUG: File parsed successfully, length={len(full_text)}")
+        full_text = re.sub(r"\s{3,}", "\n\n", full_text).strip()
     except Exception as e:
-        print(f"ERROR: File parsing failed: {e}")
         raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
 
     if debug == "raw":
-        print("DEBUG: Returning raw extracted text preview")
         return {
             "filename": filename,
             "extracted_text": full_text[:5000],
             "length": len(full_text),
         }
-    if ext == "pdf":
-        reader = PdfReader(io.BytesIO(file_bytes))
-        chunks = [
-                page.extract_text().strip()
-                for page in reader.pages
-                if page.extract_text() and page.extract_text().strip()
-            ]
-    elif ext == "pptx":
-        prs = Presentation(io.BytesIO(file_bytes))
-        chunks = []
-        for slide in prs.slides:
-            slide_texts = []
-            for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text.strip():
-                    slide_texts.append(shape.text.strip())
-            if slide.has_notes_slide:
-                notes_slide = slide.notes_slide
-                notes_text = []
-                for shape in notes_slide.shapes:
-                    if hasattr(shape, "text") and shape.text.strip():
-                        notes_text.append(shape.text.strip())
-                slide_texts.append("\n".join(notes_text))
-            if slide_texts:
-                chunks.append("\n".join(slide_texts).strip())
-    elif ext == "docx":
-        doc = Document(io.BytesIO(file_bytes))
-        chunks = [
-                paragraph.text.strip()
-                for paragraph in doc.paragraphs
-                if paragraph.text and paragraph.text.strip()
-            ]
-    elif ext == "txt":
-        chunks = [
-                line.strip()
-                for line in full_text.splitlines()
-                if line.strip()
-            ]
-    else:
-        chunks = [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
 
+    chunks = chunk_file_by_type(ext, file_bytes, full_text)
     if not chunks:
-        print("ERROR: No valid text chunks found after splitting")
         raise HTTPException(status_code=400, detail="No valid text found in file.")
 
-    print(f"DEBUG: Number of chunks extracted: {len(chunks)}")
-
     if debug == "chunks":
-        print("DEBUG: Returning chunk preview")
-        return {
-                "filename": filename,
-                "num_chunks": len(chunks),
-                "chunks": chunks[:30],
-            }
-    try:
-        result = await generate_flashcards_from_notes(
-            deck_id=deck_id,
-            notes=schemas.NoteChunks(chunks=chunks),
-            db=db,
-            current_user=current_user,
-        )
-        print(
-            f"DEBUG: Flashcards generated successfully, count={len(result.get('cards', []))}"
-        )
-        return result
-    except Exception as e:
-        print(f"ERROR during flashcard generation: {e}")
-        raise
+        return {"filename": filename, "num_chunks": len(chunks), "chunks": chunks[:30]}
+
+    return await generate_flashcards_from_notes(
+        deck_id=deck_id,
+        notes=schemas.NoteChunks(chunks=chunks),
+        num_flashcards=num_flashcards,
+        db=db,
+        current_user=current_user,
+    )
 
 
 @flashcards.get("/decks/{deck_id}/practice")
-def get_random_flashcard(
+def get_practice_card(
     deck_id: UUID,
+    only_unstudied: bool = False,
+    bookmarked_only: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    cards = (
-        db.query(card_models.DeckCard)
-        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
-        .all()
-    )
-    if not cards:
-        raise HTTPException(status_code=404, detail="No flashcards found.")
+    query = db.query(card_models.DeckCard).filter_by(deck_id=deck_id, user_id=current_user.user_id)
+    if only_unstudied:
+        query = query.filter_by(is_studied=False)
+    if bookmarked_only:
+        query = query.filter_by(is_bookmarked=True)
 
-    selected = random.choice(cards)
+    cards = query.all()
+    if not cards:
+        raise HTTPException(status_code=404, detail="No flashcards found for practice.")
+
+    card = random.choice(cards)
+    question = card.card_with_answer.split("\n")[0][3:].strip()  # "Q: ..."
+
     return {
-        "card_id": selected.card_id,
-        "question": selected.card_with_answer.split("\n")[0][3:].strip(),  # after "Q: "
+        "card_id": str(card.card_id),
+        "question": question
     }
 
 
 @flashcards.get("/cards/{card_id}/reveal")
-def reveal_flashcard_answer(
+def reveal_card_answer(
     card_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    card = (
+        db.query(card_models.DeckCard)
+        .filter_by(card_id=card_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found.")
+
+    answer = card.card_with_answer.split("\n")[1][3:].strip()  # "A: ..."
+    return {"card_id": str(card.card_id), "answer": answer}
+
+
+@flashcards.post("/cards/{card_id}/submit-response")
+def submit_flashcard_response(
+    card_id: UUID,
+    review: schemas.FlashcardReviewInput,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -565,11 +497,29 @@ def reveal_flashcard_answer(
     if not card:
         raise HTTPException(status_code=404, detail="Flashcard not found.")
 
+    # ⏱️ Update usage statistics
+    card.times_reviewed += 1
+    card.last_reviewed = datetime.utcnow()
+    card.is_studied = True
+    if review.is_correct:
+        card.correct_count += 1
+    else:
+        card.wrong_count += 1
+
+    db.commit()
+
     return {
-        "answer": card.card_with_answer.split("\n")[1][3:].strip(),  # after "A: "
+        "message": "Response recorded.",
+        "card_id": str(card.card_id),
+        "is_correct": review.is_correct,
+        "times_reviewed": card.times_reviewed,
+        "correct_count": card.correct_count,
+        "wrong_count": card.wrong_count,
+        "last_reviewed": card.last_reviewed.isoformat(),
     }
 
 
+# Analytics
 @flashcards.post("/cards/{card_id}/mark-studied")
 def mark_card_as_studied(
     card_id: UUID,
@@ -593,7 +543,7 @@ def mark_card_as_studied(
 
 
 @flashcards.post("/cards/{card_id}/bookmark")
-def toggle_bookmark_card(
+def bookmark_card(
     card_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -604,19 +554,16 @@ def toggle_bookmark_card(
         .first()
     )
     if not card:
-        raise HTTPException(status_code=404, detail="Flashcard not found.")
+        raise HTTPException(status_code=404, detail="Card not found.")
 
-    card.is_bookmarked = not card.is_bookmarked
+    card.is_bookmarked = True
     db.commit()
-    return {
-        "message": f"Flashcard {'bookmarked' if card.is_bookmarked else 'unbookmarked'}."
-    }
+    return {"message": "Card bookmarked."}
 
 
-@flashcards.post("/cards/{card_id}/submit-response")
-def submit_flashcard_response(
+@flashcards.post("/cards/{card_id}/unbookmark")
+def unbookmark_card(
     card_id: UUID,
-    review: schemas.FlashcardReviewInput,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -626,30 +573,93 @@ def submit_flashcard_response(
         .first()
     )
     if not card:
-        raise HTTPException(status_code=404, detail="Flashcard not found.")
+        raise HTTPException(status_code=404, detail="Card not found.")
 
-    # Track response
-    card.times_reviewed += 1
-    card.last_reviewed = datetime.utcnow()
-    if review.is_correct:
-        card.correct_count += 1
-    else:
-        card.wrong_count += 1
+    card.is_bookmarked = False
+    db.commit()
+    return {"message": "Card unbookmarked."}
+
+
+@flashcards.get("/cards/bookmarked", response_model=List[schemas.DeckCardOut])
+def get_bookmarked_cards(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cards = (
+        db.query(card_models.DeckCard)
+        .filter_by(user_id=current_user.user_id, is_bookmarked=True)
+        .all()
+    )
+    return cards
+
+
+@flashcards.get("/cards/unstudied", response_model=List[schemas.DeckCardOut])
+def get_unstudied_cards(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cards = (
+        db.query(card_models.DeckCard)
+        .filter_by(user_id=current_user.user_id, is_studied=False)
+        .all()
+    )
+    return cards
+
+
+@flashcards.get("/cards/hard", response_model=List[schemas.DeckCardOut])
+def get_difficult_cards(
+    min_reviews: int = 2,
+    max_accuracy: float = 0.6,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cards = (
+        db.query(card_models.DeckCard)
+        .filter(card_models.DeckCard.user_id == current_user.user_id)
+        .filter(card_models.DeckCard.times_reviewed >= min_reviews)
+        .all()
+    )
+
+    difficult = []
+    for card in cards:
+        total = card.correct_count + card.wrong_count
+        accuracy = card.correct_count / total if total > 0 else 0
+        if accuracy <= max_accuracy:
+            difficult.append(card)
+
+    return difficult
+
+
+@flashcards.post("/cards/{card_id}/reset")
+def reset_card_progress(
+    card_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    card = (
+        db.query(card_models.DeckCard)
+        .filter_by(card_id=card_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="Card not found.")
+
+    card.is_studied = False
+    card.times_reviewed = 0
+    card.correct_count = 0
+    card.wrong_count = 0
+    card.last_reviewed = None
 
     db.commit()
+    return {"message": "Card progress reset."}
 
-    return {
-        "message": "Response recorded.",
-        "card_id": str(card.card_id),
-        "correct": card.correct_count,
-        "wrong": card.wrong_count,
-        "times_reviewed": card.times_reviewed,
-    }
+# Quiz Endpoints
 
 
-@flashcards.get("/decks/{deck_id}/analytics")
-def get_deck_analytics(
+@flashcards.get("/decks/{deck_id}/quiz", response_model=schemas.QuizStartResponse)
+def start_quiz(
     deck_id: UUID,
+    limit: int = 5,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -660,61 +670,23 @@ def get_deck_analytics(
     )
     if not cards:
         raise HTTPException(
-            status_code=404, detail="No flashcards found for this deck."
+            status_code=404, detail="No flashcards available in this deck."
         )
 
-    total_cards = len(cards)
-    studied_cards = sum(1 for c in cards if c.is_studied)
-    total_reviews = sum(c.times_reviewed for c in cards)
-    correct_answers = sum(c.correct_count for c in cards)
-    wrong_answers = sum(c.wrong_count for c in cards)
-    total_attempts = correct_answers + wrong_answers
-    accuracy_percent = (
-        (correct_answers / total_attempts) * 100 if total_attempts else 0.0
-    )
-
-    return {
-        "deck_id": str(deck_id),
-        "total_cards": total_cards,
-        "studied_cards": studied_cards,
-        "total_reviews": total_reviews,
-        "correct_answers": correct_answers,
-        "wrong_answers": wrong_answers,
-        "accuracy_percent": round(accuracy_percent, 2),
-    }
-
-
-@flashcards.get("/decks/{deck_id}/quiz", response_model=schemas.QuizStartResponse)
-def start_quiz(
-    deck_id: UUID,
-    num_questions: int = 5,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    cards = (
-        db.query(card_models.DeckCard)
-        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
-        .all()
-    )
-    if not cards:
-        raise HTTPException(status_code=404, detail="No flashcards found.")
-
-    if len(cards) < num_questions:
-        num_questions = len(cards)
-
-    selected = random.sample(cards, num_questions)
-
-    quiz_cards = []
-    for card in selected:
-        question = card.card_with_answer.split("\n")[0][3:].strip()  # after 'Q: '
-        quiz_cards.append(schemas.QuizCard(card_id=card.card_id, question=question))
-
-    return {"deck_id": deck_id, "cards": quiz_cards}
+    selected = random.sample(cards, min(limit, len(cards)))
+    quiz_cards = [
+        schemas.QuizCard(
+            card_id=card.card_id,
+            question=card.card_with_answer.split("\n")[0][3:].strip(),
+        )
+        for card in selected
+    ]
+    return schemas.QuizStartResponse(deck_id=deck_id, cards=quiz_cards)
 
 
 @flashcards.post("/quiz/submit", response_model=schemas.QuizResults)
-def submit_quiz(
-    answers: List[schemas.QuizSubmission],
+def submit_quiz_self_graded(
+    responses: List[schemas.QuizSubmission],
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -722,58 +694,41 @@ def submit_quiz(
     wrong = 0
     detailed = []
 
-    for submission in answers:
+    for submission in responses:
         card = (
             db.query(card_models.DeckCard)
             .filter_by(card_id=submission.card_id, user_id=current_user.user_id)
             .first()
         )
         if not card:
-            detailed.append(
-                {
-                    "card_id": submission.card_id,
-                    "correct": False,
-                    "error": "Card not found",
-                }
-            )
-            wrong += 1
             continue
 
-        # Get correct answer from card
-        try:
-            correct_answer = card.card_with_answer.split("\n")[1][
-                3:
-            ].strip()  # after 'A: '
-        except IndexError:
-            correct_answer = ""
-
-        is_correct = submission.user_answer.strip().lower() == correct_answer.lower()
-
-        # Update tracking
         card.times_reviewed += 1
-        if is_correct:
+        card.is_studied = True
+        card.last_reviewed = datetime.utcnow()
+
+        if submission.is_correct:
             card.correct_count += 1
             correct += 1
         else:
             card.wrong_count += 1
             wrong += 1
 
-        card.last_reviewed = datetime.utcnow()
-
         detailed.append(
             {
                 "card_id": str(card.card_id),
-                "your_answer": submission.user_answer,
-                "correct_answer": correct_answer,
-                "correct": is_correct,
+                "question": card.card_with_answer.split("\n")[0][3:].strip(),
+                "correct_answer": card.card_with_answer.split("\n")[1][3:].strip(),
+                "user_answer": submission.user_answer.strip(),
+                "is_correct": submission.is_correct,
             }
         )
 
     db.commit()
 
-    return {
-        "total_questions": len(answers),
-        "correct": correct,
-        "wrong": wrong,
-        "detailed_results": detailed,
-    }
+    return schemas.QuizResults(
+        total_questions=len(responses),
+        correct=correct,
+        wrong=wrong,
+        detailed_results=detailed,
+    )
