@@ -15,6 +15,9 @@ class DeckCard(Base):
         UUID(as_uuid=True), ForeignKey("user.user_id", ondelete="CASCADE"), index=True
     )
     card_with_answer = Column(Text, nullable=False)
+    question = Column(Text, nullable=True)
+    answer = Column(Text, nullable=True)
+
     date_created = Column(TIMESTAMP, server_default=func.now())
     source_summary = Column(Text, nullable=True)
     source_chunk = Column(Text, nullable=True)

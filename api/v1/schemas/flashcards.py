@@ -19,7 +19,8 @@ class DeckOut(BaseModel):
 
 
 class CardCreate(BaseModel):
-    card_with_answer: str
+    question: str
+    answer: str
 
 
 class AddCards(BaseModel):
@@ -29,7 +30,8 @@ class AddCards(BaseModel):
 class DeckCardOut(BaseModel):
     card_id: UUID
     deck_id: UUID
-    card_with_answer: str
+    question: str
+    answer: str
     is_bookmarked: bool
     is_studied: bool
     times_reviewed: int

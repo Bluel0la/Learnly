@@ -253,22 +253,28 @@ def add_cards_to_deck(
     if not db_deck:
         raise HTTPException(status_code=404, detail="Deck not found.")
 
-    # Validate each card format (optional strictness)
+    # Create DeckCard instances
+    cards = []
     for card in payload.cards:
-        if "Q:" not in card.card_with_answer or "A:" not in card.card_with_answer:
+        question = card.question.strip()
+        answer = card.answer.strip()
+
+        if not question or not answer:
             raise HTTPException(
                 status_code=422,
-                detail="Each card must contain both 'Q:' and 'A:' format lines.",
+                detail="Each card must include a non-empty question and answer.",
             )
 
-    cards = [
-        card_models.DeckCard(
-            deck_id=deck_id,
-            user_id=current_user.user_id,
-            card_with_answer=card.card_with_answer,
+        cards.append(
+            card_models.DeckCard(
+                deck_id=deck_id,
+                user_id=current_user.user_id,
+                question=question,
+                answer=answer,
+                card_with_answer=f"Q: {question}\nA: {answer}",
+            )
         )
-        for card in payload.cards
-    ]
+
     db.add_all(cards)
     db.commit()
 
@@ -279,25 +285,50 @@ def add_cards_to_deck(
 
 
 # ✅ Get all cards in a specific deck
-@flashcards.get("/decks/{deck_id}/cards", response_model=List[schemas.DeckCardOut])
-def get_deck_cards(
+@flashcards.post("/decks/{deck_id}/cards/")
+def add_cards_to_deck(
     deck_id: UUID,
-    shuffle: bool = False,
-    only_unstudied: bool = False,
+    payload: schemas.AddCards,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(card_models.DeckCard).filter_by(
-        deck_id=deck_id, user_id=current_user.user_id
+    db_deck = (
+        db.query(models.Deck)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .first()
     )
-    if only_unstudied:
-        query = query.filter_by(is_studied=False)
+    if not db_deck:
+        raise HTTPException(status_code=404, detail="Deck not found.")
 
-    cards = query.all()
-    if shuffle:
-        random.shuffle(cards)
+    # Create DeckCard instances
+    cards = []
+    for card in payload.cards:
+        question = card.question.strip()
+        answer = card.answer.strip()
 
-    return cards
+        if not question or not answer:
+            raise HTTPException(
+                status_code=422,
+                detail="Each card must include a non-empty question and answer.",
+            )
+
+        cards.append(
+            card_models.DeckCard(
+                deck_id=deck_id,
+                user_id=current_user.user_id,
+                question=question,
+                answer=answer,
+                card_with_answer=f"Q: {question}\nA: {answer}",
+            )
+        )
+
+    db.add_all(cards)
+    db.commit()
+
+    return {
+        "message": f"{len(cards)} cards added successfully.",
+        "card_ids": [card.card_id for card in cards],
+    }
 
 
 async def generate_flashcards_from_notes(
@@ -372,6 +403,8 @@ async def generate_flashcards_from_notes(
             card_models.DeckCard(
                 deck_id=deck_id,
                 user_id=current_user.user_id,
+                question=qa["question"],
+                answer=qa["answer"],
                 card_with_answer=f"Q: {qa['question']}\nA: {qa['answer']}",
                 source_summary=cleaned_key_points[i] if i < len(cleaned_key_points) else None,
                 source_chunk=notes.chunks[i] if i < len(notes.chunks) else None,
@@ -478,6 +511,7 @@ def reveal_card_answer(
     if not card:
         raise HTTPException(status_code=404, detail="Card not found.")
 
+    answer = card.answer
     answer = card.card_with_answer.split("\n")[1][3:].strip()  # "A: ..."
     return {"card_id": str(card.card_id), "answer": answer}
 
@@ -653,9 +687,8 @@ def reset_card_progress(
     db.commit()
     return {"message": "Card progress reset."}
 
+
 # Quiz Endpoints
-
-
 @flashcards.get("/decks/{deck_id}/quiz", response_model=schemas.QuizStartResponse)
 def start_quiz(
     deck_id: UUID,
@@ -677,7 +710,7 @@ def start_quiz(
     quiz_cards = [
         schemas.QuizCard(
             card_id=card.card_id,
-            question=card.card_with_answer.split("\n")[0][3:].strip(),
+            question=card.question,
         )
         for card in selected
     ]
@@ -717,8 +750,8 @@ def submit_quiz_self_graded(
         detailed.append(
             {
                 "card_id": str(card.card_id),
-                "question": card.card_with_answer.split("\n")[0][3:].strip(),
-                "correct_answer": card.card_with_answer.split("\n")[1][3:].strip(),
+                "question": card.question,
+                "correct_answer": card.answer,
                 "user_answer": submission.user_answer.strip(),
                 "is_correct": submission.is_correct,
             }

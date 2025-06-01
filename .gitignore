@@ -3,3 +3,4 @@
 .env
 .env.config
 /__pycache__
+parser.py
