@@ -272,7 +272,7 @@ async def upload_notes_and_generate_flashcards(
     max_cards: Optional[int] = 25,
     debug: Optional[str] = None,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     filename = file.filename
     ext = filename.split(".")[-1].lower()
