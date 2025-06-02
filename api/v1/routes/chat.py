@@ -48,6 +48,29 @@ def create_chat(
         "created_at": new_chat.created_at,
     }
 
+@chat.delete("/delete-chat")
+def delete_chat(
+    chat_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Ensure chat belongs to current user
+    chat_session = (
+        db.query(Chat).filter_by(chat_id=chat_id, user_id=current_user.user_id).first()
+    )
+
+    if not chat_session:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Delete all prompts and responses associated with this chat
+    db.query(UserPrompt).filter_by(chat_id=chat_id, user_id=current_user.user_id).delete()
+    db.query(ModelResponse).filter_by(chat_id=chat_id, user_id=current_user.user_id).delete()
+
+    # Delete the chat session itself
+    db.delete(chat_session)
+    db.commit()
+
+    return {"message": "Chat session deleted successfully"}
 
 @chat.post("/send-message", response_model=ModelResponseSchema)
 def query_model(
