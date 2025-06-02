@@ -1,6 +1,6 @@
+from api.utils.file_processing import estimate_flashcard_count, extract_text_from_file, chunk_file_by_type
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from api.utils.authentication import get_current_user
-from api.utils.file_processing import estimate_flashcard_count, parse_flashcard_response, _clean_math_text, _filter_and_clean, clean_and_structure_text, extract_text_from_file, chunk_file_by_type
 from api.v1.models import deck_card as card_models
 from api.v1.schemas import flashcards as schemas
 from api.v1.models import deck as models
@@ -8,12 +8,9 @@ from api.v1.models.user import User
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from api.db.database import get_db
-from pptx import Presentation
-from PyPDF2 import PdfReader
-from docx import Document
 from typing import List, Optional
 from uuid import UUID
-import os, httpx, re, io, asyncio, random
+import os, httpx, re, asyncio, random
 from datetime import datetime
 
 flashcards = APIRouter(prefix="/flashcard", tags=["Flashcards"])
