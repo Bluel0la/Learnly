@@ -125,7 +125,6 @@ def add_cards_to_deck(
     }
 
 
-
 async def generate_flashcards_from_notes(
     deck_id: UUID,
     notes: schemas.NoteChunks,
@@ -532,9 +531,11 @@ def submit_quiz_self_graded(
             .filter_by(card_id=submission.card_id, user_id=current_user.user_id)
             .first()
         )
-        if not card:
-            continue
 
+        if not card:
+            continue  # or raise HTTPException if strict
+
+        # 🧠 Update card review stats
         card.times_reviewed += 1
         card.is_studied = True
         card.last_reviewed = datetime.utcnow()
@@ -546,13 +547,13 @@ def submit_quiz_self_graded(
             card.wrong_count += 1
             wrong += 1
 
+        # ✅ Add to results
         detailed.append(
             {
-                "card_id": str(card.card_id),
-                "question": card.question,
+                "card_id": card.card_id,
+                "your_answer": submission.user_answer.strip(),
                 "correct_answer": card.answer,
-                "user_answer": submission.user_answer.strip(),
-                "is_correct": submission.is_correct,
+                "correct": submission.is_correct,
             }
         )
 
@@ -564,6 +565,7 @@ def submit_quiz_self_graded(
         wrong=wrong,
         detailed_results=detailed,
     )
+
 
 # Get all the cards in a deck
 @flashcards.get("/decks/{deck_id}/get-cards", response_model=List[schemas.DeckCardOut])

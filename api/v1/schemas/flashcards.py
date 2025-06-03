@@ -84,13 +84,11 @@ class QuizSubmission(BaseModel):
     user_answer: str
     is_correct: bool
 
-
 class QuizResultDetail(BaseModel):
     card_id: UUID
     your_answer: str
     correct_answer: str
     correct: bool
-
 
 class QuizResults(BaseModel):
     total_questions: int
