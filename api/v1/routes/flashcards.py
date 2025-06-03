@@ -125,52 +125,6 @@ def add_cards_to_deck(
     }
 
 
-# ✅ Get all cards in a specific deck
-@flashcards.post("/decks/{deck_id}/cards/")
-def add_cards_to_deck(
-    deck_id: UUID,
-    payload: schemas.AddCards,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    db_deck = (
-        db.query(models.Deck)
-        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
-        .first()
-    )
-    if not db_deck:
-        raise HTTPException(status_code=404, detail="Deck not found.")
-
-    # Create DeckCard instances
-    cards = []
-    for card in payload.cards:
-        question = card.question.strip()
-        answer = card.answer.strip()
-
-        if not question or not answer:
-            raise HTTPException(
-                status_code=422,
-                detail="Each card must include a non-empty question and answer.",
-            )
-
-        cards.append(
-            card_models.DeckCard(
-                deck_id=deck_id,
-                user_id=current_user.user_id,
-                question=question,
-                answer=answer,
-                card_with_answer=f"Q: {question}\nA: {answer}",
-            )
-        )
-
-    db.add_all(cards)
-    db.commit()
-
-    return {
-        "message": f"{len(cards)} cards added successfully.",
-        "card_ids": [card.card_id for card in cards],
-    }
-
 
 async def generate_flashcards_from_notes(
     deck_id: UUID,
@@ -610,3 +564,20 @@ def submit_quiz_self_graded(
         wrong=wrong,
         detailed_results=detailed,
     )
+
+# Get all the cards in a deck
+@flashcards.get("/decks/{deck_id}/get-cards", response_model=List[schemas.DeckCardOut])
+def get_deck_cards(
+    deck_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    cards = (
+        db.query(card_models.DeckCard)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .all()
+    )
+    if not cards:
+        raise HTTPException(status_code=404, detail="No cards found in this deck.")
+    
+    return cards
