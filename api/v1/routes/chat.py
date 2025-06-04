@@ -301,7 +301,7 @@ async def extract_text(
     try:
         image_bytes = await file.read()
         compressed_image = compress_image(image_bytes)
-        result = await post_to_optiic_ocr_async(compressed_image)
+        result = await post_to_ocr_space_async(compressed_image)
 
         if result.get("IsErroredOnProcessing"):
             error_msg = result.get("ErrorMessage", "Unknown error")
