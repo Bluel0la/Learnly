@@ -250,6 +250,29 @@ async def post_to_ocr_space_async(
                 else:
                     raise
 
+async def post_to_optiic_ocr_async(
+    image_data: bytes, retries: int = 3, delay: int = 2,
+) -> dict:
+    url = "https://api.optiic.dev/process"
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        for attempt in range(retries):
+            try:
+                response = await client.post(
+                    url,
+                    files={"image": ("image.jpg", image_data)},
+                    data={"apiKey": OCR_API_KEY},
+                )
+                response.raise_for_status()
+                return response.json()
+
+            except httpx.RequestError as e:
+                if attempt < retries - 1:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                else:
+                    raise RuntimeError(f"Optiic OCR request failed: {e}")
+
 
 @chat.post("/extract-text/")
 async def extract_text(
@@ -278,7 +301,7 @@ async def extract_text(
     try:
         image_bytes = await file.read()
         compressed_image = compress_image(image_bytes)
-        result = await post_to_ocr_space_async(compressed_image)
+        result = await post_to_optiic_ocr_async(compressed_image)
 
         if result.get("IsErroredOnProcessing"):
             error_msg = result.get("ErrorMessage", "Unknown error")
