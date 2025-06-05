@@ -8,7 +8,7 @@ from api.v1.models.user import User
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from api.db.database import get_db
-from typing import List, Optional
+from typing import List, Optional, Literal
 from uuid import UUID
 import os, httpx, re, asyncio, random
 from datetime import datetime
@@ -217,6 +217,75 @@ async def generate_flashcards_from_notes(
     }
 
 
+async def generate_flashcards_from_keypoints(
+    deck_id: UUID,
+    key_points: List[str],
+    source_chunks: List[str],
+    db: Session,
+    current_user: User,
+):
+    flashcard_url = f"{model_chat_endpoint}/flashcard"
+
+    # 🧼 Clean key points
+    cleaned_key_points = [
+        re.sub(r"^\d+\.\s*", "", point.strip()) for point in key_points if point.strip()
+    ]
+
+    async def generate_card(point: str, index: int, semaphore: asyncio.Semaphore):
+        for attempt in range(3):
+            try:
+                async with semaphore:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
+                        resp = await client.post(flashcard_url, json={"prompt": point})
+                resp.raise_for_status()
+                response_data = resp.json()
+                question = response_data.get("question", "").strip()
+                answer = response_data.get("answer", "").strip()
+                if question and answer and len(question) > 5:
+                    return {"question": question, "answer": answer}
+            except Exception:
+                await asyncio.sleep(2**attempt)
+        return None
+
+    qa_pairs = []
+    semaphore = asyncio.Semaphore(2)
+    for i in range(0, len(cleaned_key_points), 3):
+        batch = cleaned_key_points[i : i + 3]
+        results = await asyncio.gather(
+            *[generate_card(p, i + j, semaphore) for j, p in enumerate(batch)]
+        )
+        qa_pairs.extend([qa for qa in results if qa])
+        await asyncio.sleep(1)
+
+    if not qa_pairs:
+        raise HTTPException(status_code=400, detail="No valid flashcards generated.")
+
+    flashcards_to_save = []
+    for i, qa in enumerate(qa_pairs):
+        flashcards_to_save.append(
+            card_models.DeckCard(
+                deck_id=deck_id,
+                user_id=current_user.user_id,
+                question=qa["question"],
+                answer=qa["answer"],
+                card_with_answer=f"Q: {qa['question']}\nA: {qa['answer']}",
+                source_summary=key_points[i] if i < len(key_points) else None,
+                source_chunk=source_chunks[i] if i < len(source_chunks) else None,
+                chunk_index=i,
+            )
+        )
+
+    db.bulk_save_objects(flashcards_to_save)
+    db.commit()
+
+    return {
+        "message": f"{len(qa_pairs)} flashcards generated directly from key points.",
+        "cards": qa_pairs,
+        "summary_points": cleaned_key_points,
+        "status": "success",
+    }
+
+
 @flashcards.post("/decks/{deck_id}/generate-flashcards/")
 async def upload_notes_and_generate_flashcards(
     deck_id: UUID,
@@ -266,6 +335,74 @@ async def upload_notes_and_generate_flashcards(
         db=db,
         current_user=current_user,
     )
+
+
+@flashcards.post("/decks/{deck_id}/regenerate-adaptive-drills/")
+async def generate_adaptive_drills(
+    deck_id: UUID,
+    mode: Literal["wrong", "bookmark"] = "wrong",
+    min_wrong_count: int = 2,
+    max_drills: int = 10,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # 🔍 Step 1: Get the deck
+    deck = (
+        db.query(models.Deck)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not deck:
+        raise HTTPException(status_code=404, detail="Deck not found.")
+
+    # 📌 Step 2: Filter relevant cards
+    cards_query = db.query(card_models.DeckCard).filter_by(
+        deck_id=deck_id, user_id=current_user.user_id
+    )
+
+    if mode == "wrong":
+        cards_query = cards_query.filter(
+            card_models.DeckCard.wrong_count >= min_wrong_count
+        )
+    elif mode == "bookmark":
+        cards_query = cards_query.filter(card_models.DeckCard.is_bookmarked == True)
+
+    relevant_cards = cards_query.limit(max_drills).all()
+    if not relevant_cards:
+        raise HTTPException(
+            status_code=404, detail="No cards match the adaptive filter."
+        )
+
+    # 🧠 Step 3: Extract summaries and source chunks
+    key_points = [card.source_summary for card in relevant_cards if card.source_summary]
+    source_chunks = [card.source_chunk for card in relevant_cards if card.source_chunk]
+
+    if not key_points or not source_chunks:
+        raise HTTPException(
+            status_code=400, detail="Missing source summaries or chunks."
+        )
+
+    # ⚡ Step 4: Direct flashcard generation (no re-summarization)
+    try:
+        result = await generate_flashcards_from_keypoints(
+            deck_id=deck_id,
+            key_points=key_points,
+            source_chunks=source_chunks,
+            db=db,
+            current_user=current_user,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Adaptive generation failed: {str(e)}"
+        )
+
+    return {
+        "message": f"{len(result['cards'])} adaptive flashcards generated from {len(key_points)} entries.",
+        "cards": result["cards"],
+        "source_chunks_used": source_chunks,
+        "summary_points": result["summary_points"],
+        "status": "success",
+    }
 
 
 @flashcards.get("/decks/{deck_id}/practice")
