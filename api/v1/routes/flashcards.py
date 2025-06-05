@@ -718,5 +718,30 @@ def get_deck_cards(
     )
     if not cards:
         raise HTTPException(status_code=404, detail="No cards found in this deck.")
-    
+
     return cards
+
+
+# delete endpoint for decks and their cards
+@flashcards.delete("/decks/{deck_id}")
+def delete_deck(
+    deck_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    deck = (
+        db.query(models.Deck)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not deck:
+        raise HTTPException(status_code=404, detail="Deck not found.")
+
+    # Delete all cards in the deck
+    db.query(card_models.DeckCard).filter_by(deck_id=deck_id).delete()
+
+    # Delete the deck itself
+    db.delete(deck)
+    db.commit()
+
+    return {"message": "Deck and all associated cards deleted successfully."}
