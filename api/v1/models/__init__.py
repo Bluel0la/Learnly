@@ -11,3 +11,5 @@ from api.v1.models.refresh_tokens import RefreshToken
 from api.v1.models.revoked_tokens import RevokedToken
 from api.v1.models.flash_attempt import FlashcardAttempt
 from api.v1.models.reinforced_cards import ReinforcedCard
+from api.v1.models.quizzer import Quizzer
+from api.v1.models.quiz_question import QuizzerQuestion
