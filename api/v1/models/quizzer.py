@@ -21,5 +21,5 @@ class Quizzer(Base):
 
     user = relationship("User", back_populates="quizzers")
     questions = relationship(
-        "QuizQuestion", back_populates="quizzer", cascade="all, delete"
+        "QuizzerQuestion", back_populates="quizzer", cascade="all, delete"
     )
