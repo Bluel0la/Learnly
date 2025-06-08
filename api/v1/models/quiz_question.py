@@ -9,7 +9,7 @@ class QuizzerQuestion(Base):
     __tablename__ = "quizzer_question"
 
     question_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    quiz_id = Column(UUID(as_uuid=True), ForeignKey("quiz.quiz_id", ondelete="CASCADE"))
+    quiz_id = Column(UUID(as_uuid=True), ForeignKey("quizzer.quiz_id", ondelete="CASCADE"))
     user_id = Column(UUID(as_uuid=True), ForeignKey("user.user_id", ondelete="CASCADE"))
 
     topic = Column(String(50), nullable=False)
