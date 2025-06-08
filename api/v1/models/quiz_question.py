@@ -24,5 +24,5 @@ class QuizzerQuestion(Base):
         Integer, nullable=True
     )  # 1 for correct, 0 for incorrect, NULL for unanswered
 
-    quiz = relationship("Quizzer", back_populates="questions")
+    quizzer = relationship("Quizzer", back_populates="questions")
     user = relationship("User")
