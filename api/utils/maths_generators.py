@@ -1381,3 +1381,5 @@ def generate_lcm_question(difficulty: Literal["easy", "medium", "pro"]) -> dict:
         "topic": "number_theory_lcm",
         "explanation": "\n".join(explanation),
     }
+
+
