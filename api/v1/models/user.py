@@ -25,3 +25,5 @@ class User(Base):
     revoked_tokens = relationship(
         "RevokedToken", back_populates="user", cascade="all, delete"
     )  # Add this line
+    # In your User model
+    quizzers = relationship("Quizzer", back_populates="user", cascade="all, delete")

@@ -19,7 +19,7 @@ class Quizzer(Base):
     )  # optional: could track initial level
     status = Column(String(20), default="in_progress")  # could be "completed", etc.
 
-    user = relationship("User", back_populates="quizzes")
+    user = relationship("User", back_populates="quizzers")
     questions = relationship(
         "QuizQuestion", back_populates="quizzer", cascade="all, delete"
     )
