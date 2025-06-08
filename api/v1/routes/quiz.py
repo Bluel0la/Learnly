@@ -14,8 +14,7 @@ from api.utils.math_topics import TOPIC_GENERATORS
 quiz = APIRouter(prefix="/quiz/math", tags=["Quiz - Math"])
 
 # --- In-memory session store (for now) ---
-quiz_sessions = {}
-
+quiz_sessions: dict[UUID, dict] = {}
 
 # --- 1. Get Available Math Topics ---
 @quiz.get("/topics", response_model=list[schemas.TopicInfo])
