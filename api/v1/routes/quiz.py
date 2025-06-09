@@ -93,6 +93,7 @@ def start_quiz(
         difficulty=base_difficulty,
     )
     db.add(quiz_obj)
+    db.commit()
 
     # Create question objects
     question_objs = []
