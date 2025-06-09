@@ -47,6 +47,27 @@ def determine_difficulty_from_accuracy(accuracy: float) -> str:
         return "easy"
 
 
+def get_user_difficulty_for_topic(db: Session, user_id: UUID, topic: str) -> str:
+    questions = (
+        db.query(QuizzerQuestion)
+        .filter_by(user_id=user_id, topic=topic)
+        .filter(QuizzerQuestion.is_correct.isnot(None))
+        .all()
+    )
+    if not questions:
+        return "easy"
+
+    total = len(questions)
+    correct = sum(1 for q in questions if q.is_correct == 1)
+    accuracy = correct / total
+
+    if accuracy >= 0.85:
+        return "pro"
+    elif accuracy >= 0.6:
+        return "medium"
+    return "easy"
+
+
 # --- 1. Get Available Math Topics ---
 @quiz.get("/topics", response_model=list[schemas.TopicInfo])
 def get_available_topics():
@@ -243,7 +264,9 @@ def submit_answers(
     )
 
 
-@quiz.post("/{session_id}/next-batch", response_model=schemas.AdaptiveQuestionBatch)
+@quiz.post(
+    "/{session_id}/next-adaptive-batch", response_model=schemas.AdaptiveQuestionBatch
+)
 def get_next_adaptive_batch(
     session_id: UUID,
     payload: schemas.AdaptiveBatchRequest,
@@ -262,18 +285,47 @@ def get_next_adaptive_batch(
     if not generator_fn:
         raise HTTPException(status_code=400, detail="Unsupported topic.")
 
+    # 🧠 Analyze last N graded questions for adaptivity
+    graded_qs = (
+        db.query(QuizzerQuestion)
+        .filter(
+            QuizzerQuestion.quiz_id == session_id,
+            QuizzerQuestion.user_id == current_user.user_id,
+            QuizzerQuestion.is_correct.isnot(None),
+        )
+        .order_by(
+            QuizzerQuestion.question_id.desc()
+        )  # Assuming question_id is time-incremented
+        .limit(5)
+        .all()
+    )
+
+    recent_correct = sum(1 for q in graded_qs if q.is_correct == 1)
+    recent_total = len(graded_qs)
+    score_percent = (
+        round((recent_correct / recent_total) * 100, 2) if recent_total else 0.0
+    )
+
+    # 🧠 Decide next difficulty adaptively
+    if score_percent >= 85:
+        next_difficulty = "pro"
+    elif score_percent >= 60:
+        next_difficulty = "medium"
+    else:
+        next_difficulty = "easy"
+
+    # 🧮 Generate new batch
     questions = []
     for _ in range(payload.num_questions):
-        q = generator_fn(difficulty=payload.difficulty)
+        q = generator_fn(difficulty=next_difficulty)
         q_id = uuid4()
 
-        # Save each generated question to DB
         db_question = QuizzerQuestion(
             question_id=q_id,
             quiz_id=quiz.quiz_id,
             user_id=current_user.user_id,
             topic=quiz.topic,
-            difficulty=payload.difficulty,
+            difficulty=next_difficulty,
             question_text=q["question"],
             correct_answer=q["correct_answer"],
             choices=json.dumps(q["choices"]),
@@ -287,7 +339,7 @@ def get_next_adaptive_batch(
                 question=q["question"],
                 choices=q["choices"],
                 topic=quiz.topic,
-                difficulty=payload.difficulty,
+                difficulty=next_difficulty,
             )
         )
 
@@ -298,10 +350,227 @@ def get_next_adaptive_batch(
         session_id=session_id,
         current_batch=questions,
         remaining=0,
-        difficulty_level=payload.difficulty,
-        previous_score_percent=(
-            round((quiz.correct_answers / quiz.total_questions) * 100, 2)
-            if quiz.total_questions
+        difficulty_level=next_difficulty,
+        previous_score_percent=score_percent,
+    )
+
+
+@quiz.get("/{session_id}/review", response_model=schemas.QuizSessionDetail)
+def review_quiz_session(
+    session_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    quiz = (
+        db.query(Quizzer)
+        .filter_by(quiz_id=session_id, user_id=current_user.user_id)
+        .first()
+    )
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found.")
+
+    questions = (
+        db.query(QuizzerQuestion)
+        .filter_by(quiz_id=session_id, user_id=current_user.user_id)
+        .all()
+    )
+
+    total_questions = len(questions)
+    correct = sum(1 for q in questions if q.is_correct == 1)
+    score_percent = (
+        round((correct / total_questions) * 100, 2) if total_questions else 0.0
+    )
+
+    results = [
+        schemas.GradedAnswerResult(
+            question_id=q.question_id,
+            correct_answer=q.correct_answer,
+            selected_answer=q.user_answer or "",
+            is_correct=bool(q.is_correct),
+            explanation=q.explanation,
+        )
+        for q in questions
+    ]
+
+    return schemas.QuizSessionDetail(
+        session_id=session_id,
+        topic=quiz.topic,
+        total_questions=total_questions,
+        score_percent=score_percent,
+        results=results,
+    )
+
+
+@quiz.get("/performance", response_model=schemas.PerformanceSummary)
+def get_user_performance_summary(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    all_questions = (
+        db.query(QuizzerQuestion).filter_by(user_id=current_user.user_id).all()
+    )
+
+    if not all_questions:
+        return schemas.PerformanceSummary(
+            user_id=current_user.user_id, performance_by_topic=[]
+        )
+
+    topic_stats = {}
+
+    difficulty_map = {"easy": 1, "medium": 2, "pro": 3}
+
+    for q in all_questions:
+        topic = q.topic
+        stats = topic_stats.setdefault(
+            topic,
+            {
+                "correct": 0,
+                "wrong": 0,
+                "total": 0,
+                "difficulty_sum": 0,
+                "difficulty_count": 0,
+            },
+        )
+
+        if q.is_correct == 1:
+            stats["correct"] += 1
+        elif q.is_correct == 0:
+            stats["wrong"] += 1
+
+        stats["total"] += 1
+
+        if q.difficulty in difficulty_map:
+            stats["difficulty_sum"] += difficulty_map[q.difficulty]
+            stats["difficulty_count"] += 1
+
+    performance_by_topic = []
+    for topic, data in topic_stats.items():
+        accuracy = (
+            round((data["correct"] / data["total"]) * 100, 2) if data["total"] else 0.0
+        )
+        avg_diff = (
+            round(data["difficulty_sum"] / data["difficulty_count"], 2)
+            if data["difficulty_count"]
+            else None
+        )
+        performance_by_topic.append(
+            schemas.TopicPerformance(
+                topic=topic,
+                total_answered=data["total"],
+                correct=data["correct"],
+                wrong=data["wrong"],
+                accuracy_percent=accuracy,
+                average_difficulty=avg_diff,
+            )
+        )
+
+    return schemas.PerformanceSummary(
+        user_id=current_user.user_id, performance_by_topic=performance_by_topic
+    )
+
+
+@quiz.get("/history", response_model=schemas.QuizHistoryResponse)
+def get_quiz_history(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    quiz_records = (
+        db.query(Quizzer)
+        .filter_by(user_id=current_user.user_id)
+        .order_by(Quizzer.date_created.desc())
+        .all()
+    )
+
+    history_entries = []
+    for q in quiz_records:
+        accuracy = (
+            round((q.correct_answers / q.total_questions) * 100, 2)
+            if q.total_questions
             else 0.0
-        ),
+        )
+        history_entries.append(
+            schemas.QuizHistoryEntry(
+                session_id=q.quiz_id,
+                topic=q.topic,
+                date=q.date_created,
+                accuracy=accuracy,
+                total_questions=q.total_questions,
+            )
+        )
+
+    return schemas.QuizHistoryResponse(sessions=history_entries)
+
+
+@quiz.post("/simulated-exam", response_model=schemas.SimulatedExamResponse)
+def start_simulated_exam(
+    payload: schemas.SimulatedExamRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not payload.topics:
+        raise HTTPException(status_code=400, detail="At least one topic is required.")
+
+    if payload.num_questions < 2 * len(payload.topics):
+        raise HTTPException(
+            status_code=400,
+            detail="Number of questions must be at least twice the number of selected topics.",
+        )
+
+    session_id = uuid4()
+    questions = []
+
+    # Distribute questions evenly among topics
+    per_topic = payload.num_questions // len(payload.topics)
+    extra = payload.num_questions % len(payload.topics)
+
+    for i, topic in enumerate(payload.topics):
+        if topic not in TOPIC_GENERATORS:
+            raise HTTPException(status_code=400, detail=f"Invalid topic: {topic}")
+
+        generator_fn = TOPIC_GENERATORS[topic]
+        topic_q_count = per_topic + (1 if i < extra else 0)
+
+        user_difficulty = get_user_difficulty_for_topic(db, current_user.user_id, topic)
+
+        for _ in range(topic_q_count):
+            q_data = generator_fn(difficulty=user_difficulty)
+            q_id = uuid4()
+
+            db_question = QuizzerQuestion(
+                question_id=q_id,
+                quiz_id=session_id,
+                user_id=current_user.user_id,
+                topic=topic,
+                difficulty=user_difficulty,
+                question_text=q_data["question"],
+                correct_answer=q_data["correct_answer"],
+                choices=json.dumps(q_data["choices"]),
+                explanation=q_data.get("explanation"),
+            )
+            db.add(db_question)
+
+            questions.append(
+                schemas.SimulatedExamQuestion(
+                    question_id=q_id,
+                    topic=topic,
+                    question=q_data["question"],
+                    difficulty=user_difficulty,
+                    choices=q_data["choices"],
+                )
+            )
+
+    db.add(
+        Quizzer(
+            quiz_id=session_id,
+            user_id=current_user.user_id,
+            topic="multi-topic",
+            total_questions=len(questions),
+            status="in_progress",
+        )
+    )
+
+    db.commit()
+
+    return schemas.SimulatedExamResponse(
+        session_id=session_id, questions=questions, total=len(questions)
     )

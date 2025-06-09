@@ -136,3 +136,22 @@ class PerformanceSummary(BaseModel):
 class AdaptiveBatchRequest(BaseModel):
     difficulty: Literal["easy", "medium", "pro"]
     num_questions: int = Field(default=5, ge=1, le=20)
+
+
+class SimulatedExamRequest(BaseModel):
+    topics: List[str] = Field(..., min_items=1)
+    num_questions: int = Field(..., gt=0)
+
+
+class SimulatedExamQuestion(BaseModel):
+    question_id: UUID
+    topic: str
+    question: str
+    difficulty: str
+    choices: List[str]
+
+
+class SimulatedExamResponse(BaseModel):
+    session_id: UUID
+    questions: List[SimulatedExamQuestion]
+    total: int
