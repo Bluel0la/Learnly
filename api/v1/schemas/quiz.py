@@ -23,6 +23,7 @@ class StartQuizResponse(BaseModel):
     message: str
     total_questions: int
     topic: str
+    historical_accuracy: Optional[float] = None  # New field for historical accuracy
 
 
 # 📩 4. Individual Question
@@ -68,6 +69,7 @@ class SubmitResultResponse(BaseModel):
     graded: List[GradedAnswerResult]
     total_attempted: int
     score_percent: float
+    next_difficulty: Literal["easy", "medium", "pro"]  # 👈 new field
 
 
 # 📈 10. Next Adaptive Batch
@@ -129,3 +131,8 @@ class TopicPerformance(BaseModel):
 class PerformanceSummary(BaseModel):
     user_id: UUID
     performance_by_topic: List[TopicPerformance]
+
+
+class AdaptiveBatchRequest(BaseModel):
+    difficulty: Literal["easy", "medium", "pro"]
+    num_questions: int = Field(default=5, ge=1, le=20)
