@@ -4,25 +4,28 @@ from docx import Document
 from fastapi import HTTPException
 import io, re
 
-# 🔧 Estimate flashcard count based on structure
-def estimate_flashcard_count(ext: str, file_bytes: bytes, min_per_unit: int = 3, min_cards: int = 5, max_cards: int = 50) -> int:
-    try:
-        if ext == "pdf":
-            reader = PdfReader(io.BytesIO(file_bytes))
-            est = len(reader.pages) * min_per_unit
-        elif ext == "pptx":
-            prs = Presentation(io.BytesIO(file_bytes))
-            est = len(prs.slides) * min_per_unit
-        elif ext == "docx":
-            doc = Document(io.BytesIO(file_bytes))
-            est = (len([p for p in doc.paragraphs if p.text.strip()]) // 2) * min_per_unit
-        elif ext in {"txt", "md"}:
-            lines = file_bytes.decode("utf-8").splitlines()
-            est = (len([l for l in lines if l.strip()]) // 5) * min_per_unit
-        else:
-            est = 10
 
-        return max(min_cards, min(est, max_cards))
+# 🔧 Estimate flashcard count based on structure
+def estimate_flashcard_count(
+    text: str, filename: str, min_cards: int = 3, max_cards: int = 50
+) -> int:
+    try:
+        if filename.endswith(".pdf"):
+            paragraph_count = text.count("\n\n")
+        elif filename.endswith((".pptx", ".ppt")):
+            paragraph_count = text.count("[Slide Content]") + text.count(
+                "[Speaker Notes]"
+            )
+        elif filename.endswith((".docx", ".txt", ".md")):
+            paragraphs = [
+                p for p in text.split("\n\n") if len(p.strip()) > 30
+            ]  # skip too short
+            paragraph_count = len(paragraphs)
+        else:
+            paragraph_count = len(text.split("\n\n"))
+
+        estimate = max(min_cards, min(paragraph_count, max_cards))
+        return estimate
     except Exception:
         return min_cards
 
@@ -182,3 +185,4 @@ def chunk_file_by_type(ext: str, file_bytes: bytes, full_text: str) -> list[str]
         return [line.strip() for line in full_text.splitlines() if line.strip()]
 
     return [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
+

@@ -1,4 +1,4 @@
-from api.utils.file_processing import estimate_flashcard_count, extract_text_from_file, chunk_file_by_type
+from api.utils.file_processing import estimate_flashcard_count, extract_text_from_file
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from api.utils.authentication import get_current_user
 from api.v1.models import deck_card as card_models
@@ -131,36 +131,35 @@ async def generate_flashcards_from_notes(
     num_flashcards: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    debug: Optional[str] = None,
 ):
     flashcard_url = f"{model_chat_endpoint}/flashcard"
     summarization_url = f"{model_util_endpoint}/flashcard-summarization"
 
-    db_deck = db.query(models.Deck).filter_by(deck_id=deck_id, user_id=current_user.user_id).first()
+    db_deck = (
+        db.query(models.Deck)
+        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .first()
+    )
     if not db_deck:
         raise HTTPException(status_code=404, detail="Deck not found.")
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            summary_resp = await client.post(summarization_url, json={"chunks": notes.chunks})
+            summary_resp = await client.post(
+                summarization_url, json={"chunks": notes.chunks}
+            )
         summary_resp.raise_for_status()
         key_points = summary_resp.json().get("points", [])
     except httpx.HTTPError as e:
         raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
 
-    if not key_points:
-        raise HTTPException(status_code=400, detail="No key points returned from summarization.")
-
-    # 🧼 Clean key points
     cleaned_key_points = [
         re.sub(r"^\d+\.\s*", "", re.sub(r"Here are.*?:", "", point)).strip()
         for point in key_points
         if point.strip()
-    ][:num_flashcards]
+    ]
 
-    if not cleaned_key_points:
-        raise HTTPException(status_code=400, detail="No valid key points to process.")
-
-    # 🔁 Generate flashcards
     async def generate_card(point: str, index: int, semaphore: asyncio.Semaphore):
         for attempt in range(3):
             try:
@@ -168,28 +167,30 @@ async def generate_flashcards_from_notes(
                     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
                         resp = await client.post(flashcard_url, json={"prompt": point})
                 resp.raise_for_status()
-                response_data = resp.json()
-                question = response_data.get("question", "").strip()
-                answer = response_data.get("answer", "").strip()
-                if question and answer and len(question) > 5:
-                    return {"question": question, "answer": answer}
+                data = resp.json()
+                q, a = data.get("question", "").strip(), data.get("answer", "").strip()
+                if all([q, a]) and len(q.split()) >= 3 and len(a.split()) >= 3:
+                    return {"question": q, "answer": a}
             except Exception:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(1 + attempt)
         return None
 
-    qa_pairs = []
-    batch_size = 3
-    semaphore = asyncio.Semaphore(2)
-    for i in range(0, len(cleaned_key_points), batch_size):
-        batch = cleaned_key_points[i:i + batch_size]
-        results = await asyncio.gather(*[generate_card(p, i + j, semaphore) for j, p in enumerate(batch)])
-        qa_pairs.extend([qa for qa in results if qa])
-        await asyncio.sleep(2)  # throttle between batches
+    semaphore = asyncio.BoundedSemaphore(min(10, num_flashcards))
+    results = await asyncio.gather(
+        *[generate_card(p, i, semaphore) for i, p in enumerate(cleaned_key_points)]
+    )
+    qa_pairs = [qa for qa in results if qa][:num_flashcards]
+
+    if debug == "qa":
+        return {
+            "requested": num_flashcards,
+            "generated": len(qa_pairs),
+            "cards": qa_pairs,
+            "summary_points": cleaned_key_points,
+        }
 
     if not qa_pairs:
         raise HTTPException(status_code=400, detail="No valid flashcards generated.")
-    if len(qa_pairs) < num_flashcards:
-        print(f"⚠️ Only {len(qa_pairs)} out of {num_flashcards} flashcards generated.")
 
     flashcards_to_save = []
     for i, qa in enumerate(qa_pairs):
@@ -200,9 +201,11 @@ async def generate_flashcards_from_notes(
                 question=qa["question"],
                 answer=qa["answer"],
                 card_with_answer=f"Q: {qa['question']}\nA: {qa['answer']}",
-                source_summary=cleaned_key_points[i] if i < len(cleaned_key_points) else None,
+                source_summary=(
+                    cleaned_key_points[i] if i < len(cleaned_key_points) else None
+                ),
                 source_chunk=notes.chunks[i] if i < len(notes.chunks) else None,
-                chunk_index=i
+                chunk_index=i,
             )
         )
 
@@ -212,7 +215,6 @@ async def generate_flashcards_from_notes(
     return {
         "message": f"{len(qa_pairs)} of {num_flashcards} flashcards generated and saved.",
         "cards": qa_pairs,
-        "summary_points": cleaned_key_points,
         "status": "success",
     }
 
@@ -309,7 +311,14 @@ async def upload_notes_and_generate_flashcards(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
 
-    chunks = chunk_file_by_type(ext, file_bytes, full_text)
+    def chunk_by_paragraphs(text: str, chunk_size: int = 3) -> list[str]:
+        paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 30]
+        return [
+            "\n\n".join(paragraphs[i : i + chunk_size])
+            for i in range(0, len(paragraphs), chunk_size)
+        ]
+
+    chunks = chunk_by_paragraphs(full_text)
     if not chunks:
         raise HTTPException(status_code=400, detail="No valid text found in file.")
 
@@ -322,7 +331,6 @@ async def upload_notes_and_generate_flashcards(
     if debug == "chunks":
         return {"filename": filename, "num_chunks": len(chunks), "chunks": chunks[:30]}
 
-    # 🔢 Determine adaptive number of flashcards
     if not num_flashcards:
         num_flashcards = estimate_flashcard_count(
             ext, file_bytes, min_per_unit=3, min_cards=5, max_cards=max_cards
@@ -334,8 +342,8 @@ async def upload_notes_and_generate_flashcards(
         num_flashcards=num_flashcards,
         db=db,
         current_user=current_user,
+        debug=debug
     )
-
 
 @flashcards.post("/decks/{deck_id}/regenerate-adaptive-drills/")
 async def generate_adaptive_drills(
