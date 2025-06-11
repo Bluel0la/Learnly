@@ -1,4 +1,4 @@
-from api.utils.file_processing import estimate_flashcard_count, extract_text_from_file, chunk_file_by_type
+from api.utils.file_processing import estimate_flashcard_count, extract_text_from_file
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from api.utils.authentication import get_current_user
 from api.v1.models import deck_card as card_models
@@ -311,12 +311,16 @@ async def upload_notes_and_generate_flashcards(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
 
-    # 🔀 Chunk according to file type (pages/slides/paragraphs)
-    chunks = chunk_file_by_type(ext, file_bytes, full_text)
-    chunks = [c for c in chunks if len(c.strip()) > 30]
+    def chunk_by_paragraphs(text: str, chunk_size: int = 3) -> list[str]:
+        paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 30]
+        return [
+            "\n\n".join(paragraphs[i : i + chunk_size])
+            for i in range(0, len(paragraphs), chunk_size)
+        ]
 
+    chunks = chunk_by_paragraphs(full_text)
     if not chunks:
-        raise HTTPException(status_code=400, detail="No valid chunks found in file.")
+        raise HTTPException(status_code=400, detail="No valid text found in file.")
 
     if debug == "raw":
         return {
@@ -324,17 +328,14 @@ async def upload_notes_and_generate_flashcards(
             "extracted_text": full_text[:5000],
             "length": len(full_text),
         }
-
     if debug == "chunks":
         return {"filename": filename, "num_chunks": len(chunks), "chunks": chunks[:30]}
 
-    # 🧠 Estimate flashcard count dynamically if not provided
     if not num_flashcards:
         num_flashcards = estimate_flashcard_count(
-            ext, file_bytes, min_cards=5, max_cards=max_cards
+            ext, file_bytes, min_per_unit=3, min_cards=5, max_cards=max_cards
         )
 
-    # 🃏 Generate flashcards from chunked notes
     return await generate_flashcards_from_notes(
         deck_id=deck_id,
         notes=schemas.NoteChunks(chunks=chunks),
@@ -421,7 +422,9 @@ def get_practice_card(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(card_models.DeckCard).filter_by(deck_id=deck_id, user_id=current_user.user_id)
+    query = db.query(card_models.DeckCard).filter_by(
+        deck_id=deck_id, user_id=current_user.user_id
+    )
     if only_unstudied:
         query = query.filter_by(is_studied=False)
     if bookmarked_only:
@@ -434,10 +437,7 @@ def get_practice_card(
     card = random.choice(cards)
     question = card.card_with_answer.split("\n")[0][3:].strip()  # "Q: ..."
 
-    return {
-        "card_id": str(card.card_id),
-        "question": question
-    }
+    return {"card_id": str(card.card_id), "question": question}
 
 
 @flashcards.get("/cards/{card_id}/reveal")
