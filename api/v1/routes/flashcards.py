@@ -333,7 +333,7 @@ async def upload_notes_and_generate_flashcards(
 
     if not num_flashcards:
         num_flashcards = estimate_flashcard_count(
-            ext, file_bytes, min_per_unit=3, min_cards=5, max_cards=max_cards
+            ext, file_bytes, min_cards=5, max_cards=max_cards
         )
 
     return await generate_flashcards_from_notes(
