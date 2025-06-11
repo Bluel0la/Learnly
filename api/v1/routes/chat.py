@@ -7,7 +7,7 @@ from api.v1.models.modelresponse import ModelResponse
 from api.v1.models.userprompt import UserPrompt
 from sqlalchemy.orm import Session, joinedload
 from fastapi.responses import JSONResponse
-from collections import defaultdict
+from api.utils.rates import build_chat_prompt
 from api.v1.models.user import User
 from api.v1.models.chat import Chat
 from api.db.database import get_db
@@ -72,6 +72,7 @@ def delete_chat(
 
     return {"message": "Chat session deleted successfully"}
 
+
 @chat.post("/send-message", response_model=ModelResponseSchema)
 def query_model(
     user_input: ModelRequest,
@@ -86,13 +87,37 @@ def query_model(
     )
     if not chat_session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
-    model_endpoint_url = f"{model_endpoint}/chat"
 
+    # 🧠 Retrieve previous chat turns (limit to 5 most recent)
+    past_turns = (
+        db.query(UserPrompt)
+        .options(joinedload(UserPrompt.response))
+        .filter_by(chat_id=user_input.chat_id, user_id=current_user.user_id)
+        .order_by(UserPrompt.date_sent.desc())
+        .limit(5)
+        .all()
+    )
+
+    # ⏳ Build the formatted conversation context
+    conversation_history = []
+    for turn in reversed(past_turns):  # maintain chronological order
+        conversation_history.append(f"User: {turn.query}")
+        if turn.response:
+            conversation_history.append(f"AI: {turn.response.model_response}")
+
+    # Append the new user message
+    conversation_history.append(f"User: {user_input.prompt}")
+    conversation_history.append("AI:")
+
+    full_prompt = build_chat_prompt(past_turns=reversed(past_turns), new_prompt=user_input.prompt)
+
+
+    # 🔁 Forward to model endpoint
+    model_endpoint_url = f"{model_endpoint}/chat"
     try:
         model_api_response = requests.post(
-            model_endpoint_url, json={"prompt": user_input.prompt}
+            model_endpoint_url, json={"prompt": full_prompt}
         )
-
         if model_api_response.status_code != 200:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -107,7 +132,7 @@ def query_model(
                 detail="Model response is empty or malformed.",
             )
 
-        # Save prompt
+        # Save the prompt and response
         prompt = UserPrompt(
             query_id=uuid4(),
             user_id=current_user.user_id,
@@ -118,7 +143,6 @@ def query_model(
         db.commit()
         db.refresh(prompt)
 
-        # Save response
         response = ModelResponse(
             response_id=uuid4(),
             query_id=prompt.query_id,

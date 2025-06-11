@@ -79,3 +79,35 @@ def access_protected(current_user_id: int = Depends(get_current_user_id)):
         )
 
     return {"message": "✅ Access granted. You are within the rate limit."}
+
+# utils/chat_prompt_builder.py
+
+
+def build_chat_prompt(
+    past_turns: list, new_prompt: str, system_message: str = None
+) -> str:
+    """
+    Format the chat history + user input into a prompt for the model.
+
+    Args:
+        past_turns: List of UserPrompt objects (with .response attribute loaded).
+        new_prompt: The current user query.
+        system_message: Optional system prefix to guide tone.
+
+    Returns:
+        Full formatted prompt string.
+    """
+    prompt_lines = []
+
+    if system_message:
+        prompt_lines.append(f"System: {system_message.strip()}")
+
+    for turn in past_turns:
+        prompt_lines.append(f"User: {turn.query.strip()}")
+        if turn.response:
+            prompt_lines.append(f"AI: {turn.response.model_response.strip()}")
+
+    prompt_lines.append(f"User: {new_prompt.strip()}")
+    prompt_lines.append("AI:")
+
+    return "\n".join(prompt_lines)
