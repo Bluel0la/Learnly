@@ -12,6 +12,7 @@ from typing import List, Optional, Literal
 from uuid import UUID
 import os, httpx, re, asyncio, random
 from datetime import datetime
+import logging
 
 flashcards = APIRouter(prefix="/flashcard", tags=["Flashcards"])
 model_util_endpoint = os.getenv("MODEL_UTILITY")
@@ -312,6 +313,11 @@ async def upload_notes_and_generate_flashcards(
         raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
 
     chunks = chunk_file_by_type(ext, file_bytes, full_text)
+    # Log the chunks for debugging
+    logging.info(f"Generated {len(chunks)} chunks from file '{filename}'.")
+    for i, chunk in enumerate(chunks):
+        logging.info(f"Chunk {i+1}: {chunk[:200]}{'...' if len(chunk) > 200 else ''}")
+
     if not chunks:
         raise HTTPException(status_code=400, detail="No valid text found in file.")
 
