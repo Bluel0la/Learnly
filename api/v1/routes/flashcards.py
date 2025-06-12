@@ -1,4 +1,4 @@
-from api.utils.file_processing import estimate_flashcard_count, extract_text_from_file
+from api.utils.file_processing import estimate_flashcard_count, extract_text_from_file, chunk_file_by_type
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from api.utils.authentication import get_current_user
 from api.v1.models import deck_card as card_models
@@ -311,14 +311,7 @@ async def upload_notes_and_generate_flashcards(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
 
-    def chunk_by_paragraphs(text: str, chunk_size: int = 3) -> list[str]:
-        paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 30]
-        return [
-            "\n\n".join(paragraphs[i : i + chunk_size])
-            for i in range(0, len(paragraphs), chunk_size)
-        ]
-
-    chunks = chunk_by_paragraphs(full_text)
+    chunks = chunk_file_by_type(ext, file_bytes, full_text)
     if not chunks:
         raise HTTPException(status_code=400, detail="No valid text found in file.")
 
