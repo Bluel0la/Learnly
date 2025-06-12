@@ -146,13 +146,18 @@ async def generate_flashcards_from_notes(
         raise HTTPException(status_code=404, detail="Deck not found.")
 
     try:
+        logging.info(f"Sending {len(notes.chunks)} chunks for summarization to {summarization_url}")
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
             summary_resp = await client.post(
                 summarization_url, json={"chunks": notes.chunks}
             )
         summary_resp.raise_for_status()
         key_points = summary_resp.json().get("points", [])
+        logging.info(f"Received {len(key_points)} summary points from model utility.")
+        for idx, point in enumerate(key_points):
+            logging.info(f"Summary {idx+1}: {point}")
     except httpx.HTTPError as e:
+        logging.error(f"Summarization failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
 
     cleaned_key_points = [
