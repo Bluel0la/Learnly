@@ -1,11 +1,13 @@
+import os
+import io
+import re
 from PyPDF2 import PdfReader
 from pptx import Presentation
 from docx import Document
 from fastapi import HTTPException
-import io, re
 
 
-# 🔧 Estimate flashcard count based on structure
+# === 🔧 Heuristic Flashcard Estimation ===
 def estimate_flashcard_count(
     ext: str,
     file_bytes: bytes,
@@ -14,73 +16,49 @@ def estimate_flashcard_count(
     max_cards: int = 50,
 ) -> int:
     try:
+        ext = ext.lower()
         if ext == "pdf":
             reader = PdfReader(io.BytesIO(file_bytes))
             est = len(reader.pages) * min_per_unit
+
         elif ext == "pptx":
             prs = Presentation(io.BytesIO(file_bytes))
             est = len(prs.slides) * min_per_unit
+
         elif ext == "docx":
             doc = Document(io.BytesIO(file_bytes))
             est = (
                 len([p for p in doc.paragraphs if p.text.strip()]) // 2
             ) * min_per_unit
+
         elif ext in {"txt", "md"}:
-            lines = file_bytes.decode("utf-8").splitlines()
+            lines = file_bytes.decode("utf-8", errors="ignore").splitlines()
             est = (len([l for l in lines if l.strip()]) // 5) * min_per_unit
+
         else:
-            est = 10
+            est = min_cards  # Fallback estimate for unsupported types
 
         return max(min_cards, min(est, max_cards))
+
     except Exception:
         return min_cards
 
 
-# --- 🔧 Flashcard Parser ---
-def parse_flashcard_response(text: str):
-    text = text.strip()
-
-    # Remove preambles like "Sure, here's a flashcard:"
-    text = re.sub(
-        r"^.*?(?=\bQuestion\s*:)", "", text, flags=re.IGNORECASE | re.DOTALL
-    ).strip()
-
-    question_match = re.search(
-        r"Question\s*[:：]\s*(.+?)\s*(?=Answer\s*[:：])",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    answer_match = re.search(r"Answer\s*[:：]\s*(.+)", text, re.IGNORECASE | re.DOTALL)
-
-    if question_match and answer_match:
-        return question_match.group(1).strip(), answer_match.group(1).strip()
-
-    # Fallback logic
-    lines = text.splitlines()
-    if len(lines) == 1:
-        parts = re.split(r"[:：]", lines[0], maxsplit=1)
-        if len(parts) == 2:
-            return parts[0].strip() + "?", parts[1].strip()
-        return "What is this about?", lines[0].strip()
-
-    question = lines[0].rstrip(":：.") + "?"
-    answer = " ".join(lines[1:]).strip() or "N/A"
-    return question, answer
-
-
-# --- 🧠 Math-aware Text Cleaner ---
+# === 🧼 Text Cleaning ===
 def _clean_math_text(text: str) -> str:
     text = text.replace("×", "*").replace("−", "-").replace("•", "*")
-    text = re.sub(r"\s{2,}", " ", text)  # Excess spaces
-    text = re.sub(
-        r"(?<=[\w)])\s*\n\s*(?=[\w(])", " ", text
-    )  # Mid-expression line breaks
-    if re.search(r"[=+*/^√λπ]", text):  # Optional: Tag math content
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"(?<=[\w)])\s*\n\s*(?=[\w(])", " ", text)
+
+    # Better math detection
+    if re.search(
+        r"\d\s*[\+\-×÷*/^=]\s*\d|\bpi\b|\bsqrt\b|\d{1,3}(,\d{3})+", text, re.IGNORECASE
+    ):
         text = "[MATH] " + text
+
     return text.strip()
 
 
-# --- 📦 Boilerplate Filter ---
 def _filter_and_clean(lines: list[str], boilerplate: list[str]) -> list[str]:
     return [
         _clean_math_text(line)
@@ -89,7 +67,7 @@ def _filter_and_clean(lines: list[str], boilerplate: list[str]) -> list[str]:
     ]
 
 
-# --- 🧾 Slide + Notes Structuring ---
+# === 🧾 Slide + Notes Structuring ===
 def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> str:
     boilerplate_phrases = ["Click to add text", "Click to add title"]
     slides = _filter_and_clean(slide_texts, boilerplate_phrases)
@@ -104,90 +82,103 @@ def clean_and_structure_text(slide_texts: list[str], notes_texts: list[str]) -> 
     return "\n\n".join(sections).strip()
 
 
-# --- 🗂️ Master File Extraction Handler ---
-def extract_text_from_file(file: bytes, filename: str) -> str:
-    ext = filename.split(".")[-1].lower()
-    print(f"[Extractor] Processing {filename} (.{ext})")
+# === 📥 Extraction Logic ===
+def extract_text_by_filetype(ext: str, file_bytes: bytes) -> str:
+    ext = ext.lower()
 
-    if ext == "txt" or ext == "md":
-        content = file.decode("utf-8")
+    if ext in {"txt", "md"}:
+        return file_bytes.decode("utf-8", errors="ignore")
 
     elif ext == "pdf":
-        reader = PdfReader(io.BytesIO(file))
-        pages = []
-        for page in reader.pages:
-            content = page.extract_text()
-            if content:
-                pages.append(_clean_math_text(content))
-        content = "\n\n".join(pages)
+        reader = PdfReader(io.BytesIO(file_bytes))
+        return "\n\n".join(
+            [
+                _clean_math_text(p.extract_text() or "")
+                for p in reader.pages
+                if p.extract_text()
+            ]
+        )
 
     elif ext == "docx":
-        doc = Document(io.BytesIO(file))
-        paragraphs = [
-            _clean_math_text(p.text) for p in doc.paragraphs if p.text.strip()
-        ]
-        content = "\n\n".join(paragraphs)
+        doc = Document(io.BytesIO(file_bytes))
+        return "\n\n".join(
+            [_clean_math_text(p.text) for p in doc.paragraphs if p.text.strip()]
+        )
 
     elif ext == "pptx":
-        prs = Presentation(io.BytesIO(file))
+        prs = Presentation(io.BytesIO(file_bytes))
         slide_texts, notes_texts = [], []
+
         for slide in prs.slides:
             for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text.strip():
-                    slide_texts.append(shape.text)
+                text = getattr(shape, "text", "").strip()
+                if text:
+                    slide_texts.append(text)
             if slide.has_notes_slide:
                 for shape in slide.notes_slide.shapes:
-                    if hasattr(shape, "text") and shape.text.strip():
-                        notes_texts.append(shape.text)
-        content = clean_and_structure_text(slide_texts, notes_texts)
+                    note = getattr(shape, "text", "").strip()
+                    if note:
+                        notes_texts.append(note)
+
+        return clean_and_structure_text(slide_texts, notes_texts)
 
     else:
-        raise ValueError(
-            "Unsupported file type. Allowed: .txt, .pdf, .docx, .md, .pptx"
-        )
-
-    content = content.strip()
-    if not content:
-        raise HTTPException(
-            status_code=400, detail="File appears to be empty or unsupported."
-        )
-
-    return content
+        raise ValueError(f"Unsupported file type: {ext}")
 
 
-def chunk_file_by_type(ext: str, file_bytes: bytes, full_text: str) -> list[str]:
+# === 🧩 Chunking Logic ===
+def chunk_text_by_type(ext: str, file_bytes: bytes, full_text: str) -> list[str]:
+    ext = ext.lower()
+
     if ext == "pdf":
-        reader = PdfReader(io.BytesIO(file_bytes))
         return [
-            page.extract_text().strip()
-            for page in reader.pages
-            if page.extract_text() and page.extract_text().strip()
+            _clean_math_text(p.extract_text() or "")
+            for p in PdfReader(io.BytesIO(file_bytes)).pages
+            if p.extract_text()
         ]
 
     elif ext == "pptx":
         prs = Presentation(io.BytesIO(file_bytes))
         chunks = []
+
         for slide in prs.slides:
-            slide_texts = []
+            slide_parts = []
             for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text.strip():
-                    slide_texts.append(shape.text.strip())
+                text = getattr(shape, "text", "").strip()
+                if text:
+                    slide_parts.append(text)
+
             if slide.has_notes_slide:
-                notes_text = [
-                    shape.text.strip()
+                notes_parts = [
+                    getattr(shape, "text", "").strip()
                     for shape in slide.notes_slide.shapes
-                    if hasattr(shape, "text") and shape.text.strip()
+                    if getattr(shape, "text", "").strip()
                 ]
-                slide_texts.append("\n".join(notes_text))
-            if slide_texts:
-                chunks.append("\n".join(slide_texts).strip())
+                slide_parts.extend(notes_parts)
+
+            if slide_parts:
+                chunks.append("\n".join(slide_parts))
+
         return chunks
 
     elif ext == "docx":
         doc = Document(io.BytesIO(file_bytes))
-        return [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        return [_clean_math_text(p.text) for p in doc.paragraphs if p.text.strip()]
 
-    elif ext == "txt":
-        return [line.strip() for line in full_text.splitlines() if line.strip()]
+    elif ext in {"txt", "md"}:
+        lines = [line.strip() for line in full_text.splitlines() if line.strip()]
+        return ["\n".join(lines[i : i + 5]) for i in range(0, len(lines), 5)]
 
+    # Fallback: chunk by paragraphs
     return [chunk.strip() for chunk in full_text.split("\n\n") if chunk.strip()]
+
+
+# === 🔄 Entry Point ===
+def process_file(file_bytes: bytes, filename: str) -> list[str]:
+    ext = os.path.splitext(filename)[-1].lower().replace(".", "")
+    full_text = extract_text_by_filetype(ext, file_bytes)
+
+    if not full_text.strip():
+        raise HTTPException(status_code=400, detail="Empty or unsupported file.")
+
+    return chunk_text_by_type(ext, file_bytes, full_text)

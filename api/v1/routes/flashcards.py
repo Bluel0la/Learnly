@@ -1,4 +1,4 @@
-from api.utils.file_processing import estimate_flashcard_count, extract_text_from_file, chunk_file_by_type
+from api.utils.file_processing import estimate_flashcard_count, process_file
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from api.utils.authentication import get_current_user
 from api.v1.models import deck_card as card_models
@@ -145,8 +145,13 @@ async def generate_flashcards_from_notes(
     if not db_deck:
         raise HTTPException(status_code=404, detail="Deck not found.")
 
+    if not notes.chunks or not isinstance(notes.chunks, list):
+        raise HTTPException(status_code=400, detail="No valid chunks provided.")
+
     try:
-        logging.info(f"Sending {len(notes.chunks)} chunks for summarization to {summarization_url}")
+        logging.info(
+            f"Sending {len(notes.chunks)} chunks for summarization to {summarization_url}"
+        )
         async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
             summary_resp = await client.post(
                 summarization_url, json={"chunks": notes.chunks}
@@ -154,12 +159,11 @@ async def generate_flashcards_from_notes(
         summary_resp.raise_for_status()
         key_points = summary_resp.json().get("points", [])
         logging.info(f"Received {len(key_points)} summary points from model utility.")
-        for idx, point in enumerate(key_points):
-            logging.info(f"Summary {idx+1}: {point}")
     except httpx.HTTPError as e:
         logging.error(f"Summarization failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
 
+    # Clean and normalize summary points
     cleaned_key_points = [
         re.sub(r"^\d+\.\s*", "", re.sub(r"Here are.*?:", "", point)).strip()
         for point in key_points
@@ -181,6 +185,7 @@ async def generate_flashcards_from_notes(
                 await asyncio.sleep(1 + attempt)
         return None
 
+    # Limit generation to top key points
     semaphore = asyncio.BoundedSemaphore(min(10, num_flashcards))
     results = await asyncio.gather(
         *[generate_card(p, i, semaphore) for i, p in enumerate(cleaned_key_points)]
@@ -311,17 +316,15 @@ async def upload_notes_and_generate_flashcards(
 
     try:
         file_bytes = await file.read()
-        full_text = extract_text_from_file(file_bytes, filename)
-        full_text = re.sub(r"[^\x00-\x7F]+", " ", full_text)
-        full_text = re.sub(r"\s{3,}", "\n\n", full_text).strip()
+        # ✅ Replaces old logic with your modular pipeline
+        chunks = process_file(file_bytes, filename)
+        logging.info(f"Generated {len(chunks)} chunks from file '{filename}'.")
+        for i, chunk in enumerate(chunks):
+            logging.info(
+                f"Chunk {i+1}: {chunk[:200]}{'...' if len(chunk) > 200 else ''}"
+            )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
-
-    chunks = chunk_file_by_type(ext, file_bytes, full_text)
-    # Log the chunks for debugging
-    logging.info(f"Generated {len(chunks)} chunks from file '{filename}'.")
-    for i, chunk in enumerate(chunks):
-        logging.info(f"Chunk {i+1}: {chunk[:200]}{'...' if len(chunk) > 200 else ''}")
 
     if not chunks:
         raise HTTPException(status_code=400, detail="No valid text found in file.")
@@ -329,12 +332,13 @@ async def upload_notes_and_generate_flashcards(
     if debug == "raw":
         return {
             "filename": filename,
-            "extracted_text": full_text[:5000],
-            "length": len(full_text),
+            "chunks_combined": "\n\n".join(chunks)[:5000],
+            "num_chunks": len(chunks),
         }
     if debug == "chunks":
         return {"filename": filename, "num_chunks": len(chunks), "chunks": chunks[:30]}
 
+    # ✅ Use your new estimation function here
     if not num_flashcards:
         num_flashcards = estimate_flashcard_count(
             ext, file_bytes, min_per_unit=3, min_cards=5, max_cards=max_cards
