@@ -1,18 +1,20 @@
-from api.utils.file_processing import estimate_flashcard_count, process_file
+from api.utils.file_processing import ALLOWED_EXTENSIONS, MAX_FILE_SIZE_MB, extract_text_from_file, clean_extracted_text
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from api.utils.authentication import get_current_user
 from api.v1.models import deck_card as card_models
 from api.v1.schemas import flashcards as schemas
 from api.v1.models import deck as models
+from api.v1.models.deck import Deck
+from api.v1.models.deck_card import DeckCard
 from api.v1.models.user import User
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from api.db.database import get_db
 from typing import List, Optional, Literal
 from uuid import UUID
-import os, httpx, re, asyncio, random
+import os, httpx, re, asyncio, random, uuid, logging
 from datetime import datetime
-import logging
 
 flashcards = APIRouter(prefix="/flashcard", tags=["Flashcards"])
 model_util_endpoint = os.getenv("MODEL_UTILITY")
@@ -125,237 +127,110 @@ def add_cards_to_deck(
         "card_ids": [card.card_id for card in cards],
     }
 
-
-async def generate_flashcards_from_notes(
-    deck_id: UUID,
-    notes: schemas.NoteChunks,
-    num_flashcards: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    debug: Optional[str] = None,
-):
-    flashcard_url = f"{model_chat_endpoint}/flashcard"
-    summarization_url = f"{model_util_endpoint}/flashcard-summarization"
-
-    db_deck = (
-        db.query(models.Deck)
-        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
-        .first()
-    )
-    if not db_deck:
-        raise HTTPException(status_code=404, detail="Deck not found.")
-
-    if not notes.chunks or not isinstance(notes.chunks, list):
-        raise HTTPException(status_code=400, detail="No valid chunks provided.")
-
-    try:
-        logging.info(
-            f"Sending {len(notes.chunks)} chunks for summarization to {summarization_url}"
-        )
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0)) as client:
-            summary_resp = await client.post(
-                summarization_url, json={"chunks": notes.chunks}
-            )
-        summary_resp.raise_for_status()
-        key_points = summary_resp.json().get("points", [])
-        logging.info(f"Received {len(key_points)} summary points from model utility.")
-    except httpx.HTTPError as e:
-        logging.error(f"Summarization failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Summarization failed: {str(e)}")
-
-    # Clean and normalize summary points
-    cleaned_key_points = [
-        re.sub(r"^\d+\.\s*", "", re.sub(r"Here are.*?:", "", point)).strip()
-        for point in key_points
-        if point.strip()
-    ]
-
-    async def generate_card(point: str, index: int, semaphore: asyncio.Semaphore):
-        for attempt in range(3):
-            try:
-                async with semaphore:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-                        resp = await client.post(flashcard_url, json={"prompt": point})
-                resp.raise_for_status()
-                data = resp.json()
-                q, a = data.get("question", "").strip(), data.get("answer", "").strip()
-                if all([q, a]) and len(q.split()) >= 3 and len(a.split()) >= 3:
-                    return {"question": q, "answer": a}
-            except Exception:
-                await asyncio.sleep(1 + attempt)
-        return None
-
-    # Limit generation to top key points
-    semaphore = asyncio.BoundedSemaphore(min(10, num_flashcards))
-    results = await asyncio.gather(
-        *[generate_card(p, i, semaphore) for i, p in enumerate(cleaned_key_points)]
-    )
-    qa_pairs = [qa for qa in results if qa][:num_flashcards]
-
-    if debug == "qa":
-        return {
-            "requested": num_flashcards,
-            "generated": len(qa_pairs),
-            "cards": qa_pairs,
-            "summary_points": cleaned_key_points,
-        }
-
-    if not qa_pairs:
-        raise HTTPException(status_code=400, detail="No valid flashcards generated.")
-
-    flashcards_to_save = []
-    for i, qa in enumerate(qa_pairs):
-        flashcards_to_save.append(
-            card_models.DeckCard(
-                deck_id=deck_id,
-                user_id=current_user.user_id,
-                question=qa["question"],
-                answer=qa["answer"],
-                card_with_answer=f"Q: {qa['question']}\nA: {qa['answer']}",
-                source_summary=(
-                    cleaned_key_points[i] if i < len(cleaned_key_points) else None
-                ),
-                source_chunk=notes.chunks[i] if i < len(notes.chunks) else None,
-                chunk_index=i,
-            )
-        )
-
-    db.bulk_save_objects(flashcards_to_save)
-    db.commit()
-
-    return {
-        "message": f"{len(qa_pairs)} of {num_flashcards} flashcards generated and saved.",
-        "cards": qa_pairs,
-        "status": "success",
-    }
-
-
-async def generate_flashcards_from_keypoints(
-    deck_id: UUID,
-    key_points: List[str],
-    source_chunks: List[str],
-    db: Session,
-    current_user: User,
-):
-    flashcard_url = f"{model_chat_endpoint}/flashcard"
-
-    # 🧼 Clean key points
-    cleaned_key_points = [
-        re.sub(r"^\d+\.\s*", "", point.strip()) for point in key_points if point.strip()
-    ]
-
-    async def generate_card(point: str, index: int, semaphore: asyncio.Semaphore):
-        for attempt in range(3):
-            try:
-                async with semaphore:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
-                        resp = await client.post(flashcard_url, json={"prompt": point})
-                resp.raise_for_status()
-                response_data = resp.json()
-                question = response_data.get("question", "").strip()
-                answer = response_data.get("answer", "").strip()
-                if question and answer and len(question) > 5:
-                    return {"question": question, "answer": answer}
-            except Exception:
-                await asyncio.sleep(2**attempt)
-        return None
-
-    qa_pairs = []
-    semaphore = asyncio.Semaphore(2)
-    for i in range(0, len(cleaned_key_points), 3):
-        batch = cleaned_key_points[i : i + 3]
-        results = await asyncio.gather(
-            *[generate_card(p, i + j, semaphore) for j, p in enumerate(batch)]
-        )
-        qa_pairs.extend([qa for qa in results if qa])
-        await asyncio.sleep(1)
-
-    if not qa_pairs:
-        raise HTTPException(status_code=400, detail="No valid flashcards generated.")
-
-    flashcards_to_save = []
-    for i, qa in enumerate(qa_pairs):
-        flashcards_to_save.append(
-            card_models.DeckCard(
-                deck_id=deck_id,
-                user_id=current_user.user_id,
-                question=qa["question"],
-                answer=qa["answer"],
-                card_with_answer=f"Q: {qa['question']}\nA: {qa['answer']}",
-                source_summary=key_points[i] if i < len(key_points) else None,
-                source_chunk=source_chunks[i] if i < len(source_chunks) else None,
-                chunk_index=i,
-            )
-        )
-
-    db.bulk_save_objects(flashcards_to_save)
-    db.commit()
-
-    return {
-        "message": f"{len(qa_pairs)} flashcards generated directly from key points.",
-        "cards": qa_pairs,
-        "summary_points": cleaned_key_points,
-        "status": "success",
-    }
-
-
 @flashcards.post("/decks/{deck_id}/generate-flashcards/")
-async def upload_notes_and_generate_flashcards(
+async def generate_flashcards_from_file(
     deck_id: UUID,
     file: UploadFile = File(...),
     num_flashcards: Optional[int] = None,
     max_cards: Optional[int] = 25,
-    debug: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # ✅ Validate deck ownership
+    deck = db.query(Deck).filter(Deck.deck_id == deck_id, Deck.user_id == current_user.user_id).first()
+    if not deck:
+        raise HTTPException(status_code=404, detail="Deck not found or access denied.")
+
+    # ✅ Validate file type
     filename = file.filename
-    ext = filename.split(".")[-1].lower()
-    if ext not in {"txt", "pdf", "docx", "md", "pptx"}:
+    extension = os.path.splitext(filename)[1].lower()
+    if extension not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Unsupported file type.")
 
+    # ✅ Validate file size
+    contents = await file.read()
+    file_size_mb = len(contents) / (1024 * 1024)
+    if file_size_mb > MAX_FILE_SIZE_MB:
+        raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB.")
+
+    # ✅ Save file temporarily
+    temp_path = f"/tmp/{filename}"
+    with open(temp_path, "wb") as f:
+        f.write(contents)
+
+    # ✅ Extract and clean text
     try:
-        file_bytes = await file.read()
-        # ✅ Replaces old logic with your modular pipeline
-        chunks = process_file(file_bytes, filename)
-        logging.info(f"Generated {len(chunks)} chunks from file '{filename}'.")
-        for i, chunk in enumerate(chunks):
-            logging.info(
-                f"Chunk {i+1}: {chunk[:200]}{'...' if len(chunk) > 200 else ''}"
-            )
+        raw_text = extract_text_from_file(temp_path)
+        clean_text = clean_extracted_text(raw_text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"File parsing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error extracting file: {str(e)}")
 
-    if not chunks:
-        raise HTTPException(status_code=400, detail="No valid text found in file.")
+    # ✅ Summarization step
+    summarization_url = f"{model_util_endpoint}/flashcard-summarization"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                summarization_url,
+                json={"text": clean_text, "max_tokens": 512},
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            summary_result = response.json()
+            summary_chunks = summary_result.get("summaries", [])
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=500, detail=f"Summarization request error: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"Summarization failed: {e.response.text}")
 
-    if debug == "raw":
-        return {
-            "filename": filename,
-            "chunks_combined": "\n\n".join(chunks)[:5000],
-            "num_chunks": len(chunks),
-        }
-    if debug == "chunks":
-        return {"filename": filename, "num_chunks": len(chunks), "chunks": chunks[:30]}
+    # ✅ Limit summary chunks
+    if num_flashcards:
+        summary_chunks = summary_chunks[:min(num_flashcards, len(summary_chunks), max_cards)]
 
-    # ✅ Use your new estimation function here
-    if not num_flashcards:
-        num_flashcards = estimate_flashcard_count(
-            ext, file_bytes, min_per_unit=3, min_cards=5, max_cards=max_cards
+    # ✅ Flashcard generation step
+    flashcard_url = f"{model_chat_endpoint}/flashcard"
+    async with httpx.AsyncClient() as client:
+        try:
+            flashcard_response = await client.post(
+                flashcard_url,
+                json={"summary_chunks": summary_chunks},
+                timeout=60.0,
+            )
+            flashcard_response.raise_for_status()
+            flashcards = flashcard_response.json().get("flashcards", [])
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=500, detail=f"Flashcard request error: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(status_code=e.response.status_code, detail=f"Flashcard generation failed: {e.response.text}")
+
+    # ✅ Save flashcards to DB
+    for idx, card in enumerate(flashcards):
+        db_card = DeckCard(
+            card_id=uuid.uuid4(),
+            deck_id=deck_id,
+            user_id=current_user.user_id,
+            question=card.get("question"),
+            answer=card.get("answer"),
+            card_with_answer=f"Q: {card.get('question')}\nA: {card.get('answer')}",
+            source_summary=card.get("summary"),
+            source_chunk=card.get("summary"),
+            chunk_index=idx
         )
+        db.add(db_card)
 
-    return await generate_flashcards_from_notes(
-        deck_id=deck_id,
-        notes=schemas.NoteChunks(chunks=chunks),
-        num_flashcards=num_flashcards,
-        db=db,
-        current_user=current_user,
-        debug=debug,
-    )
+    db.commit()
+
+    return JSONResponse({
+        "message": "Flashcards generated and saved successfully.",
+        "filename": filename,
+        "deck_id": str(deck_id),
+        "num_flashcards": len(flashcards),
+        "summaries": summary_chunks,
+        "flashcards": flashcards,
+    })
 
 
 @flashcards.post("/decks/{deck_id}/regenerate-adaptive-drills/")
-async def generate_adaptive_drills(
+async def regenerate_adaptive_drills(
     deck_id: UUID,
     mode: Literal["wrong", "bookmark"] = "wrong",
     min_wrong_count: int = 2,
@@ -363,26 +238,24 @@ async def generate_adaptive_drills(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # 🔍 Step 1: Get the deck
+    # ✅ Validate deck ownership
     deck = (
-        db.query(models.Deck)
-        .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        db.query(Deck)
+        .filter(Deck.deck_id == deck_id, Deck.user_id == current_user.user_id)
         .first()
     )
     if not deck:
-        raise HTTPException(status_code=404, detail="Deck not found.")
+        raise HTTPException(status_code=404, detail="Deck not found or access denied.")
 
-    # 📌 Step 2: Filter relevant cards
-    cards_query = db.query(card_models.DeckCard).filter_by(
-        deck_id=deck_id, user_id=current_user.user_id
+    # ✅ Filter cards based on adaptive mode
+    cards_query = db.query(DeckCard).filter(
+        DeckCard.deck_id == deck_id, DeckCard.user_id == current_user.user_id
     )
 
     if mode == "wrong":
-        cards_query = cards_query.filter(
-            card_models.DeckCard.wrong_count >= min_wrong_count
-        )
+        cards_query = cards_query.filter(DeckCard.wrong_count >= min_wrong_count)
     elif mode == "bookmark":
-        cards_query = cards_query.filter(card_models.DeckCard.is_bookmarked == True)
+        cards_query = cards_query.filter(DeckCard.is_bookmarked == True)
 
     relevant_cards = cards_query.limit(max_drills).all()
     if not relevant_cards:
@@ -390,34 +263,69 @@ async def generate_adaptive_drills(
             status_code=404, detail="No cards match the adaptive filter."
         )
 
-    # 🧠 Step 3: Extract summaries and source chunks
-    key_points = [card.source_summary for card in relevant_cards if card.source_summary]
-    source_chunks = [card.source_chunk for card in relevant_cards if card.source_chunk]
+    # ✅ Extract source summaries and chunks
+    summary_chunks = [
+        card.source_summary for card in relevant_cards if card.source_summary
+    ]
+    raw_chunks = [card.source_chunk for card in relevant_cards if card.source_chunk]
 
-    if not key_points or not source_chunks:
+    if not summary_chunks or not raw_chunks:
         raise HTTPException(
-            status_code=400, detail="Missing source summaries or chunks."
+            status_code=400, detail="Some cards are missing summary or chunk."
         )
 
-    # ⚡ Step 4: Direct flashcard generation (no re-summarization)
+    # ✅ Call flashcard generation model directly
+    flashcard_url = f"{model_chat_endpoint}/flashcard"
     try:
-        result = await generate_flashcards_from_keypoints(
-            deck_id=deck_id,
-            key_points=key_points,
-            source_chunks=source_chunks,
-            db=db,
-            current_user=current_user,
-        )
-    except Exception as e:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                flashcard_url,
+                json={"summary_chunks": summary_chunks},
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            flashcards = response.json().get("flashcards", [])
+    except httpx.RequestError as e:
         raise HTTPException(
-            status_code=500, detail=f"Adaptive generation failed: {str(e)}"
+            status_code=500, detail=f"Flashcard request error: {str(e)}"
         )
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=e.response.status_code,
+            detail=f"Flashcard generation failed: {e.response.text}",
+        )
+
+    # ✅ Save adaptive flashcards to DB
+    saved_cards = []
+    for idx, card in enumerate(flashcards):
+        db_card = DeckCard(
+            card_id=uuid.uuid4(),
+            deck_id=deck_id,
+            user_id=current_user.user_id,
+            question=card.get("question"),
+            answer=card.get("answer"),
+            card_with_answer=f"Q: {card.get('question')}\nA: {card.get('answer')}",
+            source_summary=card.get("summary"),
+            source_chunk=raw_chunks[idx] if idx < len(raw_chunks) else None,
+            chunk_index=idx,
+        )
+        db.add(db_card)
+        saved_cards.append(db_card)
+
+    db.commit()
 
     return {
-        "message": f"{len(result['cards'])} adaptive flashcards generated from {len(key_points)} entries.",
-        "cards": result["cards"],
-        "source_chunks_used": source_chunks,
-        "summary_points": result["summary_points"],
+        "message": f"{len(saved_cards)} adaptive flashcards regenerated and saved.",
+        "cards": [
+            {
+                "question": card.question,
+                "answer": card.answer,
+                "chunk_index": card.chunk_index,
+            }
+            for card in saved_cards
+        ],
+        "summary_points": summary_chunks,
+        "source_chunks_used": raw_chunks,
         "status": "success",
     }
 

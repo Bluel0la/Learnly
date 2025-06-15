@@ -4,3 +4,5 @@
 .env.config
 /__pycache__
 parser.py
+test.py
+/api/v1/routes/test
