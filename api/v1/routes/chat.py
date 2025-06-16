@@ -79,7 +79,7 @@ def query_model(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Ensure chat session belongs to the user
+    #  Step 1: Validate chat session
     chat_session = (
         db.query(Chat)
         .filter_by(chat_id=user_input.chat_id, user_id=current_user.user_id)
@@ -88,84 +88,111 @@ def query_model(
     if not chat_session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
 
-    # 🧠 Retrieve previous chat turns (limit to 5 most recent)
-    past_turns = (
-        db.query(UserPrompt)
-        .options(joinedload(UserPrompt.response))
-        .filter_by(chat_id=user_input.chat_id, user_id=current_user.user_id)
-        .order_by(UserPrompt.date_sent.desc())
-        .limit(5)
-        .all()
-    )
-
-    # ⏳ Build the formatted conversation context
-    conversation_history = []
-    for turn in reversed(past_turns):  # maintain chronological order
-        conversation_history.append(f"User: {turn.query}")
-        if turn.response:
-            conversation_history.append(f"AI: {turn.response.model_response}")
-
-    # Append the new user message
-    conversation_history.append(f"User: {user_input.prompt}")
-    conversation_history.append("AI:")
-
-    full_prompt = build_chat_prompt(past_turns=reversed(past_turns), new_prompt=user_input.prompt)
-
-
-    # 🔁 Forward to model endpoint
+    #  Step 2: Initial call to model for classification + draft response
     model_endpoint_url = f"{model_endpoint}/chat"
     try:
-        model_api_response = requests.post(
-            model_endpoint_url, json={"prompt": full_prompt}
+        first_response = requests.post(
+            model_endpoint_url, json={"prompt": user_input.prompt}
         )
-        if model_api_response.status_code != 200:
+        if first_response.status_code != 200:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Failed to get response from model server.",
             )
 
-        model_response_data = model_api_response.json()
-        model_text = model_response_data.get("response")
-        if not model_text:
+        model_response_data = first_response.json()
+        draft_text = model_response_data.get("response")
+        task_type = model_response_data.get("task_type")
+
+        if not draft_text:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Model response is empty or malformed.",
             )
 
-        # Save the prompt and response
-        prompt = UserPrompt(
-            query_id=uuid4(),
-            user_id=current_user.user_id,
-            chat_id=user_input.chat_id,
-            query=user_input.prompt,
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Initial model request failed: {str(e)}",
         )
-        db.add(prompt)
-        db.commit()
-        db.refresh(prompt)
 
-        response = ModelResponse(
-            response_id=uuid4(),
-            query_id=prompt.query_id,
-            user_id=current_user.user_id,
-            chat_id=user_input.chat_id,
-            model_response=model_text,
+    #  Step 3: Fetch past 10 turns for this chat session
+    past_turns = (
+        db.query(UserPrompt)
+        .options(joinedload(UserPrompt.response))
+        .filter_by(chat_id=user_input.chat_id, user_id=current_user.user_id)
+        .order_by(UserPrompt.date_sent.desc())
+        .limit(10)
+        .all()
+    )
+
+    #  Step 4: Filter only those that match the current task_type
+    relevant_turns = [
+        turn for turn in reversed(past_turns) if turn.task_type == task_type
+    ]
+
+    #  Step 5: Build the contextual prompt with last 3 relevant turns
+    conversation_history = []
+    for turn in relevant_turns[-4:]:  # last 3 relevant
+        conversation_history.append(f"User: {turn.query}")
+        if turn.response:
+            conversation_history.append(f"AI: {turn.response.model_response}")
+
+    conversation_history.append(f"User: {user_input.prompt}")
+    conversation_history.append("AI:")
+
+    full_prompt = "\n".join(conversation_history)
+
+    #  Step 6: Send full context to model
+    try:
+        final_response = requests.post(
+            model_endpoint_url, json={"prompt": full_prompt}
         )
-        db.add(response)
-        db.commit()
-        db.refresh(response)
+        if final_response.status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Final model generation failed.",
+            )
 
-        return {
-            "chat_id": str(user_input.chat_id),
-            "query_id": str(prompt.query_id),
-            "response": model_text,
-        }
+        final_data = final_response.json()
+        model_text = final_data.get("response")
+        task_type = final_data.get("task_type", task_type)  # fallback to first task_type
 
     except requests.exceptions.RequestException as e:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Model service unreachable: {str(e)}",
+            detail=f"Final model request failed: {str(e)}",
         )
 
+    #  Step 7: Store the prompt + response + task_type
+    prompt = UserPrompt(
+        query_id=uuid4(),
+        user_id=current_user.user_id,
+        chat_id=user_input.chat_id,
+        query=user_input.prompt,
+        task_type=task_type  # 🧠 Store for next turn filtering
+    )
+    db.add(prompt)
+    db.commit()
+    db.refresh(prompt)
+
+    response = ModelResponse(
+        response_id=uuid4(),
+        query_id=prompt.query_id,
+        user_id=current_user.user_id,
+        chat_id=user_input.chat_id,
+        model_response=model_text,
+    )
+    db.add(response)
+    db.commit()
+    db.refresh(response)
+
+    return {
+        "chat_id": str(user_input.chat_id),
+        "query_id": str(prompt.query_id),
+        "response": model_text,
+        "task_type": task_type,
+    }
 
 @chat.get("/session/{chat_id}")
 def get_chat_history(
@@ -303,7 +330,7 @@ async def extract_text(
     file: UploadFile = File(...), current_user: User = Depends(get_current_user)
 ):
 
-    # ✅ Content-type validation
+    #  Content-type validation
     ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
     if file.content_type not in ALLOWED_IMAGE_TYPES:
         return JSONResponse(
@@ -313,7 +340,7 @@ async def extract_text(
             status_code=415,
         )
 
-    # ✅ Rate limiting per user
+    #  Rate limiting per user
     if is_rate_limited(current_user.user_id):
         return JSONResponse(
             content={

@@ -78,7 +78,7 @@ def access_protected(current_user_id: int = Depends(get_current_user_id)):
             status_code=429, detail="Rate limit exceeded. Try again later."
         )
 
-    return {"message": "✅ Access granted. You are within the rate limit."}
+    return {"message": " Access granted. You are within the rate limit."}
 
 # utils/chat_prompt_builder.py
 

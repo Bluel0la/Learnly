@@ -96,7 +96,7 @@ def get_current_user(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    return user  # ✅ Now returns a User object instead of a dict
+    return user  #  Now returns a User object instead of a dict
 
 
 def is_admin(

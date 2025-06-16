@@ -183,7 +183,7 @@ def generate_addition_question(difficulty: Literal["easy", "medium", "pro"]) -> 
             "One is positive and one is negative, so find the difference and keep the sign of the larger absolute value."
         )
     explanation_lines.append(f"Step 3: Compute the result: {a} + {b} = {correct}.")
-    explanation_lines.append(f"✅ Final Answer: **{correct}**")
+    explanation_lines.append(f" Final Answer: **{correct}**")
 
     explanation = "\n".join(explanation_lines)
 
@@ -278,7 +278,7 @@ def generate_subtraction_question(difficulty: Literal["easy", "medium", "pro"]) 
         )
 
     explanation.append(f"Step 5: Compute the result: {a} - {b} = {correct}.")
-    explanation.append(f"✅ Final Answer: **{correct}**")
+    explanation.append(f" Final Answer: **{correct}**")
 
     return {
         "question": question,
@@ -348,7 +348,7 @@ def generate_division_question(difficulty: Literal["easy", "medium", "pro"]) -> 
     else:
         explanation.append("Step 4: Since the signs differ, the result is negative.")
 
-    explanation.append(f"✅ Final Answer: **{quotient}**")
+    explanation.append(f" Final Answer: **{quotient}**")
 
     return {
         "question": question,
@@ -428,7 +428,7 @@ def generate_multiplication_question(
     else:
         explanation.append("Step 4: Different signs → product is negative.")
 
-    explanation.append(f"✅ Final Answer: **{a} × {b} = {correct}**")
+    explanation.append(f" Final Answer: **{a} × {b} = {correct}**")
 
     return {
         "question": question,
@@ -496,7 +496,7 @@ def generate_decimal_addition_question(
         )
 
     explanation.append(f"Step 4: The total is `calculator.add({a}, {b})`.")
-    explanation.append(f"✅ Final Answer: {correct}")
+    explanation.append(f" Final Answer: {correct}")
 
     return {
         "question": question,
@@ -568,7 +568,7 @@ def generate_decimal_subtraction_question(
     explanation.append(
         f"Step 4: Use calculator logic: `calculator.subtract({a}, {b})`."
     )
-    explanation.append(f"✅ Final Answer: {correct}")
+    explanation.append(f" Final Answer: {correct}")
 
     return {
         "question": question,
@@ -651,7 +651,7 @@ def generate_decimal_multiplication_question(
     explanation.append(
         "Step 5: Multiplying decimals may change decimal precision of the result."
     )
-    explanation.append(f"✅ Final Answer: {correct}")
+    explanation.append(f" Final Answer: {correct}")
 
     # 6. Return final structure
     return {
@@ -721,7 +721,7 @@ def generate_decimal_division_question(
         explanation.append("Step 4: Signs are different, so the result is negative.")
 
     explanation.append("Step 5: Since decimals are involved, the result may also be a decimal.")
-    explanation.append(f"✅ Final Answer: {correct}")
+    explanation.append(f" Final Answer: {correct}")
 
     return {
         "question": question,
@@ -893,7 +893,7 @@ def generate_fraction_multiplication_question(
         f"Step 2: Multiply the denominators: {a.denominator} × {b.denominator} = {a.denominator * b.denominator}",
         f"Step 3: Result = {a.numerator * b.numerator}/{a.denominator * b.denominator}",
         f"Step 4: Simplify the fraction if possible.",
-        f"✅ Final Answer: {correct_str}",
+        f" Final Answer: {correct_str}",
     ]
 
     return {
@@ -957,7 +957,7 @@ def generate_fraction_division_question(
         f"Step 4: Multiply denominators: {a.denominator} × {b.numerator}",
         f"Step 5: Final expression: {a.numerator * b.denominator}/{a.denominator * b.numerator}",
         f"Step 6: Simplify result if possible.",
-        f"✅ Final Answer: {correct_str}",
+        f" Final Answer: {correct_str}",
     ]
 
     return {
@@ -1015,7 +1015,7 @@ def generate_pemdas_question(difficulty: Literal["easy", "medium", "pro"]) -> di
         ]
     )
 
-    explanation = "\n".join(steps) + f"\n\n✅ Final Answer: {correct_answer}"
+    explanation = "\n".join(steps) + f"\n\n Final Answer: {correct_answer}"
 
     return {
         "question": question,
@@ -1075,7 +1075,7 @@ def generate_percentage_question(difficulty: Literal["easy", "medium", "pro"]) -
         f"Step 2: Convert the percentage to a decimal → calculator.divide({percent}, 100)",
         f"Step 3: Multiply the decimal by {number} → calculator.multiply(calculator.divide({percent}, 100), {number})",
         f"Step 4: This gives the answer → {correct}",
-        f"✅ Final Answer: {correct}",
+        f" Final Answer: {correct}",
     ]
 
     return {
@@ -1134,7 +1134,7 @@ def generate_percentage_relationship_question(
         f"Step 2: Divide the part by the whole → calculator.divide({part}, {base})",
         f"Step 3: Multiply the result by 100 to convert to percentage → calculator.multiply(calculator.divide({part}, {base}), 100)",
         f"Step 4: The final value is the percentage → {correct}%",
-        f"✅ Final Answer: {correct}%",
+        f" Final Answer: {correct}%",
     ]
 
     return {
@@ -1207,7 +1207,7 @@ def generate_percentage_comparison_question(
         f"Step 4: calculator.divide(difference, {original})",
         "Step 5: Multiply the result by 100 → calculator.multiply(calculator.divide(...), 100)",
         f"Step 6: This gives the percentage change between the two values.",
-        f"✅ Final Answer: {correct}%",
+        f" Final Answer: {correct}%",
     ]
 
     return {
@@ -1283,7 +1283,7 @@ def generate_gcf_question(difficulty: Literal["easy", "medium", "pro"]) -> dict:
         explanation.append("Step 4: No common prime factors → GCF is 1")
         explanation.append(f"        → calculator.gcf({a}, {b}) = 1")
 
-    explanation.append(f"✅ Final Answer: {correct}")
+    explanation.append(f" Final Answer: {correct}")
 
     return {
         "question": question,
@@ -1369,7 +1369,7 @@ def generate_lcm_question(difficulty: Literal["easy", "medium", "pro"]) -> dict:
         [
             "Step 6: Multiply these prime factors together to get the LCM.",
             f"Step 7: Final result is `calculator.lcm({a}, {b})`.",
-            f"✅ Final Answer: {correct}",
+            f" Final Answer: {correct}",
         ]
     )
 

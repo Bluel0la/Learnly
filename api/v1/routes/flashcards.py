@@ -81,7 +81,7 @@ def get_user_decks(
     ]
 
 
-# ✅ Add flashcards to a specific deck
+#  Add flashcards to a specific deck
 @flashcards.post("/decks/{deck_id}/cards/")
 def add_cards_to_deck(
     deck_id: UUID,
@@ -136,36 +136,36 @@ async def generate_flashcards_from_file(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # ✅ Validate deck ownership
+    #  Validate deck ownership
     deck = db.query(Deck).filter(Deck.deck_id == deck_id, Deck.user_id == current_user.user_id).first()
     if not deck:
         raise HTTPException(status_code=404, detail="Deck not found or access denied.")
 
-    # ✅ Validate file type
+    #  Validate file type
     filename = file.filename
     extension = os.path.splitext(filename)[1].lower()
     if extension not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Unsupported file type.")
 
-    # ✅ Validate file size
+    #  Validate file size
     contents = await file.read()
     file_size_mb = len(contents) / (1024 * 1024)
     if file_size_mb > MAX_FILE_SIZE_MB:
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB.")
 
-    # ✅ Save file temporarily
+    #  Save file temporarily
     temp_path = f"/tmp/{filename}"
     with open(temp_path, "wb") as f:
         f.write(contents)
 
-    # ✅ Extract and clean text
+    #  Extract and clean text
     try:
         raw_text = extract_text_from_file(temp_path)
         clean_text = clean_extracted_text(raw_text)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error extracting file: {str(e)}")
 
-    # ✅ Summarization step
+    #  Summarization step
     summarization_url = f"{model_util_endpoint}/flashcard-summarization"
     async with httpx.AsyncClient() as client:
         try:
@@ -182,11 +182,11 @@ async def generate_flashcards_from_file(
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=e.response.status_code, detail=f"Summarization failed: {e.response.text}")
 
-    # ✅ Limit summary chunks
+    #  Limit summary chunks
     if num_flashcards:
         summary_chunks = summary_chunks[:min(num_flashcards, len(summary_chunks), max_cards)]
 
-    # ✅ Flashcard generation step
+    #  Flashcard generation step
     flashcard_url = f"{model_chat_endpoint}/flashcard"
     async with httpx.AsyncClient() as client:
         try:
@@ -202,7 +202,7 @@ async def generate_flashcards_from_file(
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=e.response.status_code, detail=f"Flashcard generation failed: {e.response.text}")
 
-    # ✅ Save flashcards to DB
+    #  Save flashcards to DB
     for idx, card in enumerate(flashcards):
         db_card = DeckCard(
             card_id=uuid.uuid4(),
@@ -238,7 +238,7 @@ async def regenerate_adaptive_drills(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # ✅ Validate deck ownership
+    #  Validate deck ownership
     deck = (
         db.query(Deck)
         .filter(Deck.deck_id == deck_id, Deck.user_id == current_user.user_id)
@@ -247,7 +247,7 @@ async def regenerate_adaptive_drills(
     if not deck:
         raise HTTPException(status_code=404, detail="Deck not found or access denied.")
 
-    # ✅ Filter cards based on adaptive mode
+    #  Filter cards based on adaptive mode
     cards_query = db.query(DeckCard).filter(
         DeckCard.deck_id == deck_id, DeckCard.user_id == current_user.user_id
     )
@@ -263,7 +263,7 @@ async def regenerate_adaptive_drills(
             status_code=404, detail="No cards match the adaptive filter."
         )
 
-    # ✅ Extract source summaries and chunks
+    #  Extract source summaries and chunks
     summary_chunks = [
         card.source_summary for card in relevant_cards if card.source_summary
     ]
@@ -274,7 +274,7 @@ async def regenerate_adaptive_drills(
             status_code=400, detail="Some cards are missing summary or chunk."
         )
 
-    # ✅ Call flashcard generation model directly
+    #  Call flashcard generation model directly
     flashcard_url = f"{model_chat_endpoint}/flashcard"
     try:
         async with httpx.AsyncClient() as client:
@@ -295,7 +295,7 @@ async def regenerate_adaptive_drills(
             detail=f"Flashcard generation failed: {e.response.text}",
         )
 
-    # ✅ Save adaptive flashcards to DB
+    #  Save adaptive flashcards to DB
     saved_cards = []
     for idx, card in enumerate(flashcards):
         db_card = DeckCard(
@@ -608,7 +608,7 @@ def submit_quiz_self_graded(
             card.wrong_count += 1
             wrong += 1
 
-        # ✅ Add to results
+        #  Add to results
         detailed.append(
             {
                 "card_id": card.card_id,

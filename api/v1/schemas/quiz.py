@@ -42,18 +42,18 @@ class QuestionBatchResponse(BaseModel):
     remaining: int
 
 
-# ✅ 6. User Submission (one question)
+#  6. User Submission (one question)
 class QuestionAnswerSubmission(BaseModel):
     question_id: UUID
     selected_answer: str
 
 
-# ✅ 7. Submission Request (batch)
+#  7. Submission Request (batch)
 class SubmitAnswersRequest(BaseModel):
     responses: List[QuestionAnswerSubmission]
 
 
-# ✅ 8. Graded Result (per question)
+#  8. Graded Result (per question)
 class GradedAnswerResult(BaseModel):
     question_id: UUID
     correct_answer: str
@@ -62,7 +62,7 @@ class GradedAnswerResult(BaseModel):
     explanation: Optional[str]
 
 
-# ✅ 9. Submit Result Response
+#  9. Submit Result Response
 class SubmitResultResponse(BaseModel):
     correct: int
     wrong: int
