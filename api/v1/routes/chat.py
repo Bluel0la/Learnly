@@ -73,13 +73,24 @@ def delete_chat(
     return {"message": "Chat session deleted successfully"}
 
 
+def is_followup_question(query: str) -> bool:
+    """Heuristic to detect if a prompt is a clarification/follow-up."""
+    query = query.strip().lower()
+    return (
+        query.startswith("why")
+        or query.startswith("how")
+        or query.startswith("what does")
+        or query in {"explain", "please explain", "can you explain that?", "what?"}
+    )
+
+
 @chat.post("/send-message", response_model=ModelResponseSchema)
 def query_model(
     user_input: ModelRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    #  Step 1: Validate chat session
+    # Step 1: Validate chat session
     chat_session = (
         db.query(Chat)
         .filter_by(chat_id=user_input.chat_id, user_id=current_user.user_id)
@@ -88,35 +99,7 @@ def query_model(
     if not chat_session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
 
-    #  Step 2: Initial call to model for classification + draft response
-    model_endpoint_url = f"{model_endpoint}/chat"
-    try:
-        first_response = requests.post(
-            model_endpoint_url, json={"prompt": user_input.prompt}
-        )
-        if first_response.status_code != 200:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Failed to get response from model server.",
-            )
-
-        model_response_data = first_response.json()
-        draft_text = model_response_data.get("response")
-        task_type = model_response_data.get("task_type")
-
-        if not draft_text:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Model response is empty or malformed.",
-            )
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Initial model request failed: {str(e)}",
-        )
-
-    #  Step 3: Fetch past 10 turns for this chat session
+    # Step 2: Fetch past 10 turns
     past_turns = (
         db.query(UserPrompt)
         .options(joinedload(UserPrompt.response))
@@ -125,15 +108,52 @@ def query_model(
         .limit(10)
         .all()
     )
+    past_turns_reversed = list(reversed(past_turns))
+    last_task_type = past_turns_reversed[-1].task_type if past_turns_reversed else None
 
-    #  Step 4: Filter only those that match the current task_type
-    relevant_turns = [
-        turn for turn in reversed(past_turns) if turn.task_type == task_type
-    ]
+    # Step 3: Determine task type (follow-up override allowed)
+    model_endpoint_url = f"{model_endpoint}/chat"
+    try:
+        if is_followup_question(user_input.prompt) and last_task_type:
+            task_type = last_task_type
+        else:
+            # Fresh classification
+            first_response = requests.post(
+                model_endpoint_url, json={"prompt": user_input.prompt}
+            )
+            if first_response.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Failed to get response from model server.",
+                )
+            model_response_data = first_response.json()
+            task_type = model_response_data.get("task_type")
 
-    #  Step 5: Build the contextual prompt with last 3 relevant turns
+            if not model_response_data.get("response"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Model response is empty or malformed.",
+                )
+
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Initial model request failed: {str(e)}",
+        )
+
+    # Step 4: Filter turns by task type (or all if clarification)
+    if is_followup_question(user_input.prompt) and last_task_type:
+        relevant_turns = [
+            turn for turn in past_turns_reversed if turn.task_type == last_task_type
+        ]
+    else:
+        relevant_turns = [
+            turn for turn in past_turns_reversed if turn.task_type == task_type
+        ]
+
+    # Step 5: Build prompt context (max 3 previous turns)
     conversation_history = []
-    for turn in relevant_turns[-4:]:  # last 3 relevant
+    for turn in relevant_turns[-3:]:
         conversation_history.append(f"User: {turn.query}")
         if turn.response:
             conversation_history.append(f"AI: {turn.response.model_response}")
@@ -143,11 +163,9 @@ def query_model(
 
     full_prompt = "\n".join(conversation_history)
 
-    #  Step 6: Send full context to model
+    # Step 6: Final model call with context
     try:
-        final_response = requests.post(
-            model_endpoint_url, json={"prompt": full_prompt}
-        )
+        final_response = requests.post(model_endpoint_url, json={"prompt": full_prompt})
         if final_response.status_code != 200:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
@@ -156,7 +174,7 @@ def query_model(
 
         final_data = final_response.json()
         model_text = final_data.get("response")
-        task_type = final_data.get("task_type", task_type)  # fallback to first task_type
+        task_type = final_data.get("task_type", task_type)
 
     except requests.exceptions.RequestException as e:
         raise HTTPException(
@@ -164,13 +182,13 @@ def query_model(
             detail=f"Final model request failed: {str(e)}",
         )
 
-    #  Step 7: Store the prompt + response + task_type
+    # Step 7: Store user prompt and model response
     prompt = UserPrompt(
         query_id=uuid4(),
         user_id=current_user.user_id,
         chat_id=user_input.chat_id,
         query=user_input.prompt,
-        task_type=task_type  # 🧠 Store for next turn filtering
+        task_type=task_type,
     )
     db.add(prompt)
     db.commit()
@@ -193,6 +211,7 @@ def query_model(
         "response": model_text,
         "task_type": task_type,
     }
+
 
 @chat.get("/session/{chat_id}")
 def get_chat_history(
