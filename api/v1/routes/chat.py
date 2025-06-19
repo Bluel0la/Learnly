@@ -7,7 +7,7 @@ from api.v1.models.modelresponse import ModelResponse
 from api.v1.models.userprompt import UserPrompt
 from sqlalchemy.orm import Session, joinedload
 from fastapi.responses import JSONResponse
-from api.utils.rates import build_chat_prompt
+from api.utils.context import fetch_relevant_turns
 from api.v1.models.user import User
 from api.v1.models.chat import Chat
 from api.db.database import get_db
@@ -141,29 +141,22 @@ def query_model(
             detail=f"Initial model request failed: {str(e)}",
         )
 
-    # Step 4: Filter turns by task type (or all if clarification)
-    if is_followup_question(user_input.prompt) and last_task_type:
-        relevant_turns = [
-            turn for turn in past_turns_reversed if turn.task_type == last_task_type
-        ]
-    else:
-        relevant_turns = [
-            turn for turn in past_turns_reversed if turn.task_type == task_type
-        ]
+    # Step 4: Fetch top-K relevant turns semantically from remote embedding service
+    relevant_turns = fetch_relevant_turns(user_input.prompt, past_turns_reversed)
 
-    # Step 5: Build prompt context (max 3 previous turns)
+    # Step 5: Build structured conversation history
     conversation_history = []
-    for turn in relevant_turns[-3:]:
-        conversation_history.append(f"User: {turn.query}")
-        if turn.response:
-            conversation_history.append(f"AI: {turn.response.model_response}")
+    for turn in relevant_turns:
+        if turn.get("user"):
+            conversation_history.append(f"User: {turn['user']}")
+        if turn.get("ai"):
+            conversation_history.append(f"AI: {turn['ai']}")
 
     conversation_history.append(f"User: {user_input.prompt}")
     conversation_history.append("AI:")
-
     full_prompt = "\n".join(conversation_history)
 
-    # Step 6: Final model call with context
+    # Step 6: Final model call with full prompt
     try:
         final_response = requests.post(model_endpoint_url, json={"prompt": full_prompt})
         if final_response.status_code != 200:
