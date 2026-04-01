@@ -1,10 +1,13 @@
 import uuid
-from sqlalchemy import Column, Text, ForeignKey, TIMESTAMP, UUID, Integer, Boolean, DateTime
-from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
-from api.db.database import Base  # Import Base from your database setup
 
-class DeckCard(Base):
+from sqlalchemy import Column, Text, ForeignKey, UUID, Integer, Boolean, DateTime
+from sqlalchemy.orm import relationship
+
+from api.db.database import Base
+from api.v1.models.mixins import TimestampMixin
+
+
+class DeckCard(TimestampMixin, Base):
     __tablename__ = "deck_card"
 
     card_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -18,10 +21,9 @@ class DeckCard(Base):
     question = Column(Text, nullable=True)
     answer = Column(Text, nullable=True)
 
-    date_created = Column(TIMESTAMP, server_default=func.now())
     source_summary = Column(Text, nullable=True)
     source_chunk = Column(Text, nullable=True)
-    chunk_index = Column(Integer, nullable=True)  # Optional: helpful for traceability
+    chunk_index = Column(Integer, nullable=True)
 
     # Tracking + usage fields
     is_bookmarked = Column(Boolean, default=False)

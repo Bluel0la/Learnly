@@ -1,11 +1,13 @@
-from sqlalchemy import Column, Integer, ForeignKey, Text, TIMESTAMP, UUID, String
 from uuid import uuid4
+
+from sqlalchemy import Column, ForeignKey, Text, UUID, String
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
+
 from api.db.database import Base
+from api.v1.models.mixins import TimestampMixin
 
 
-class UserPrompt(Base):
+class UserPrompt(TimestampMixin, Base):
     __tablename__ = "user_prompt"
 
     query_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -17,7 +19,6 @@ class UserPrompt(Base):
     )
     query = Column(Text, nullable=False)
     task_type = Column(String, nullable=True)
-    date_sent = Column(TIMESTAMP, server_default=func.now())
 
     chat = relationship("Chat", back_populates="prompts")
     user = relationship("User")

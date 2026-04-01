@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.requests import Request
 from api.db.database import create_database
 from api.v1.routes import api_version_one
+from api.core.exceptions import register_exception_handlers
 
 
 @asynccontextmanager
@@ -16,6 +17,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+register_exception_handlers(app)
 
 
 origins = [

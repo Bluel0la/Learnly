@@ -47,18 +47,20 @@ def create_deck(
 @flashcards.get("/decks/", response_model=List[schemas.DeckOut])
 def get_user_decks(
     include_card_count: Optional[bool] = False,
+    skip: int = 0,
+    limit: int = 20,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     if not include_card_count:
-        return db.query(models.Deck).filter_by(user_id=current_user.user_id).all()
+        return db.query(models.Deck).filter_by(user_id=current_user.user_id).offset(skip).limit(limit).all()
 
     # With card count annotation
     decks = (
         db.query(
             models.Deck.deck_id,
             models.Deck.title,
-            models.Deck.date_created,
+            models.Deck.created_at.label("date_created"),
             func.count(card_models.DeckCard.card_id).label("card_count"),
         )
         .outerjoin(
@@ -475,12 +477,16 @@ def unbookmark_card(
 
 @flashcards.get("/cards/bookmarked", response_model=List[schemas.DeckCardOut])
 def get_bookmarked_cards(
+    skip: int = 0,
+    limit: int = 20,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     cards = (
         db.query(card_models.DeckCard)
         .filter_by(user_id=current_user.user_id, is_bookmarked=True)
+        .offset(skip)
+        .limit(limit)
         .all()
     )
     return cards
@@ -488,12 +494,16 @@ def get_bookmarked_cards(
 
 @flashcards.get("/cards/unstudied", response_model=List[schemas.DeckCardOut])
 def get_unstudied_cards(
+    skip: int = 0,
+    limit: int = 20,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     cards = (
         db.query(card_models.DeckCard)
         .filter_by(user_id=current_user.user_id, is_studied=False)
+        .offset(skip)
+        .limit(limit)
         .all()
     )
     return cards
@@ -503,6 +513,8 @@ def get_unstudied_cards(
 def get_difficult_cards(
     min_reviews: int = 2,
     max_accuracy: float = 0.6,
+    skip: int = 0,
+    limit: int = 20,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -632,12 +644,16 @@ def submit_quiz_self_graded(
 @flashcards.get("/decks/{deck_id}/get-cards", response_model=List[schemas.DeckCardOut])
 def get_deck_cards(
     deck_id: UUID,
+    skip: int = 0,
+    limit: int = 50,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     cards = (
         db.query(card_models.DeckCard)
         .filter_by(deck_id=deck_id, user_id=current_user.user_id)
+        .offset(skip)
+        .limit(limit)
         .all()
     )
     if not cards:
