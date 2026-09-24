@@ -1,22 +1,20 @@
 from passlib.context import CryptContext
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from jose import jwt, JWTError
-from dotenv import load_dotenv
-import os
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from uuid import UUID
 from api.db.database import get_db
+from api.core.config import settings
 from api.v1.models.user import User
 from api.v1.models.revoked_tokens import RevokedToken
 from api.v1.models.refresh_tokens import RefreshToken
 
 
-load_dotenv(".env")
-
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES"))
-SECRET_KEY = os.getenv("SECRET_KEY")
-ALGORITHM = os.getenv("ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+SECRET_KEY = settings.SECRET_KEY
+ALGORITHM = settings.ALGORITHM
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -36,10 +34,13 @@ def is_token_revoked(db: Session, token: str) -> bool:
 
 
 # Function to revoke a token
-def revoke_token(db: Session, token: str, user_id: str):
-    expires_at = datetime.utcnow() + timedelta(
+def revoke_token(db: Session, token: str, user_id: UUID | str):
+    expires_at = datetime.now(timezone.utc) + timedelta(
         days=7
     )  # or extract from token if preferred
+    # Idempotent: skip if already revoked.
+    if db.query(RevokedToken).filter_by(token=token).first():
+        return
     revoked = RevokedToken(token=token, user_id=user_id, expires_at=expires_at)
     db.add(revoked)
     db.commit()
@@ -49,9 +50,9 @@ def revoke_token(db: Session, token: str, user_id: str):
 def create_access_token(data: dict, expires_delta: timedelta = None):
     to_encode = data.copy()
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -100,12 +101,10 @@ def get_current_user(
 
 
 def is_admin(
-    current_user: User = Depends(get_current_user), db: Session = Depends(get_db)
-) -> bool:
+    current_user: User = Depends(get_current_user),
+) -> User:
     """
-    Check if the current user has an admin role.
+    Placeholder admin gate: User has no role column yet.
+    Deny by default until roles are added.
     """
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Access denied: Admins only")
-
-    return True
+    raise HTTPException(status_code=403, detail="Access denied: Admins only")

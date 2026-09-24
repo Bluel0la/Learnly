@@ -1,46 +1,21 @@
 """
-Business logic for the Chat module.
+Business logic for the Chat module (OpenAI-only).
 
-Handles LLM classification, conversation history building, prompt/response
-persistence, and image OCR. All external API calls use async httpx.
+Replaces the old MODEL_ENDPOINT / OCR.space flow with llm_service:
+- send_message(): 1 DB fetch + 1 OpenAI chat_complete() + single transaction
+- extract_text_from_image(): OpenAI vision (no OCR.space key)
 """
 import io
-import os
 from uuid import UUID, uuid4
 
-import httpx
-from dotenv import load_dotenv
 from PIL import Image
 from sqlalchemy.orm import Session, joinedload
 
 from api.v1.models.chat import Chat
 from api.v1.models.userprompt import UserPrompt
 from api.v1.models.modelresponse import ModelResponse
-from api.core.exceptions import (
-    NotFoundException,
-    ExternalServiceException,
-    BadRequestException,
-)
-
-load_dotenv(".env")
-
-MODEL_ENDPOINT = os.getenv("MODEL_ENDPOINT")
-OCR_API_KEY = os.getenv("OCR_API")
-
-
-# ---------------------------------------------------------------------------
-# Follow-up detection
-# ---------------------------------------------------------------------------
-
-def is_followup_question(query: str) -> bool:
-    """Heuristic to detect if a prompt is a clarification/follow-up."""
-    query = query.strip().lower()
-    return (
-        query.startswith("why")
-        or query.startswith("how")
-        or query.startswith("what does")
-        or query in {"explain", "please explain", "can you explain that?", "what?"}
-    )
+from api.v1.services import llm_service
+from api.core.exceptions import NotFoundException, BadRequestException
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +26,7 @@ def create_chat_session(db: Session, user_id: UUID, chat_title: str) -> dict:
     new_chat = Chat(
         chat_id=uuid4(),
         user_id=user_id,
-        chat_title=chat_title,
+        chat_title=(chat_title or "Untitled Chat").strip()[:100],
     )
     db.add(new_chat)
     db.commit()
@@ -72,8 +47,7 @@ def delete_chat_session(db: Session, user_id: UUID, chat_id: UUID) -> dict:
     if not chat_session:
         raise NotFoundException("Chat not found")
 
-    db.query(UserPrompt).filter_by(chat_id=chat_id, user_id=user_id).delete()
-    db.query(ModelResponse).filter_by(chat_id=chat_id, user_id=user_id).delete()
+    # Relationships cascade, single delete is enough.
     db.delete(chat_session)
     db.commit()
 
@@ -132,35 +106,25 @@ def get_all_sessions(
 
 
 # ---------------------------------------------------------------------------
-# LLM interaction (async)
+# LLM interaction (OpenAI, async)
 # ---------------------------------------------------------------------------
-
-async def _call_llm(prompt: str) -> dict:
-    """Make an async POST to the LLM endpoint. Returns the JSON response."""
-    url = f"{MODEL_ENDPOINT}/chat"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            response = await client.post(url, json={"prompt": prompt})
-            response.raise_for_status()
-            return response.json()
-        except httpx.RequestError as e:
-            raise ExternalServiceException(f"LLM request failed: {str(e)}")
-        except httpx.HTTPStatusError:
-            raise ExternalServiceException("Failed to get response from model server.")
-
 
 async def send_message(
     db: Session, user_id: UUID, chat_id: UUID, prompt: str
 ) -> dict:
-    """Classify the prompt, build context, call LLM, and persist the exchange."""
-    # Validate chat session
+    """Build history locally, call OpenAI once, persist in one transaction."""
+    prompt = (prompt or "").strip()
+    if not prompt:
+        raise BadRequestException("Prompt must not be empty.")
+    if len(prompt) > 4000:
+        raise BadRequestException("Prompt is too long (max 4000 characters).")
+
     chat_session = (
         db.query(Chat).filter_by(chat_id=chat_id, user_id=user_id).first()
     )
     if not chat_session:
         raise NotFoundException("Chat session not found.")
 
-    # Fetch recent turns
     past_turns = (
         db.query(UserPrompt)
         .options(joinedload(UserPrompt.response))
@@ -170,61 +134,54 @@ async def send_message(
         .all()
     )
     past_turns_reversed = list(reversed(past_turns))
+
     last_task_type = past_turns_reversed[-1].task_type if past_turns_reversed else None
 
-    # Determine task type
-    if is_followup_question(prompt) and last_task_type:
+    # Local history (no embedding-service call).
+    from api.utils.context import past_turns_to_dicts
+
+    history_dicts = past_turns_to_dicts(past_turns_reversed)
+    messages = llm_service.build_history_messages(history_dicts, prompt)
+
+    model_text = await llm_service.chat_complete(messages)
+
+    # Cheap separate classification only when this isn't a follow-up;
+    # otherwise inherit last turn's label.
+    lowered = prompt.strip().lower()
+    is_followup = lowered.startswith(("why", "how", "what does")) or lowered in {
+        "explain", "please explain", "can you explain that?", "what?",
+    }
+    if is_followup and last_task_type:
         task_type = last_task_type
     else:
-        first_data = await _call_llm(prompt)
-        task_type = first_data.get("task_type")
-        if not first_data.get("response"):
-            raise ExternalServiceException("Model response is empty or malformed.")
+        task_type = await llm_service.classify_task(prompt)
 
-    # Fetch relevant turns (async version)
-    from api.utils.context import fetch_relevant_turns
+    # Single transaction for prompt + response.
+    try:
+        prompt_obj = UserPrompt(
+            query_id=uuid4(),
+            user_id=user_id,
+            chat_id=chat_id,
+            query=prompt,
+            task_type=task_type,
+        )
+        db.add(prompt_obj)
+        db.flush()
 
-    relevant_turns = await fetch_relevant_turns(prompt, past_turns_reversed)
-
-    # Build conversation history
-    conversation_history = []
-    for turn in relevant_turns:
-        if turn.get("user"):
-            conversation_history.append(f"User: {turn['user']}")
-        if turn.get("ai"):
-            conversation_history.append(f"AI: {turn['ai']}")
-
-    conversation_history.append(f"User: {prompt}")
-    conversation_history.append("AI:")
-    full_prompt = "\n".join(conversation_history)
-
-    # Final LLM call
-    final_data = await _call_llm(full_prompt)
-    model_text = final_data.get("response")
-    task_type = final_data.get("task_type", task_type)
-
-    # Persist prompt and response
-    prompt_obj = UserPrompt(
-        query_id=uuid4(),
-        user_id=user_id,
-        chat_id=chat_id,
-        query=prompt,
-        task_type=task_type,
-    )
-    db.add(prompt_obj)
-    db.commit()
-    db.refresh(prompt_obj)
-
-    response_obj = ModelResponse(
-        response_id=uuid4(),
-        query_id=prompt_obj.query_id,
-        user_id=user_id,
-        chat_id=chat_id,
-        model_response=model_text,
-    )
-    db.add(response_obj)
-    db.commit()
-    db.refresh(response_obj)
+        response_obj = ModelResponse(
+            response_id=uuid4(),
+            query_id=prompt_obj.query_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            model_response=model_text,
+        )
+        db.add(response_obj)
+        db.commit()
+        db.refresh(prompt_obj)
+        db.refresh(response_obj)
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "chat_id": str(chat_id),
@@ -235,7 +192,7 @@ async def send_message(
 
 
 # ---------------------------------------------------------------------------
-# Image processing & OCR
+# Image processing (OpenAI vision replaces OCR.space)
 # ---------------------------------------------------------------------------
 
 def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1000) -> bytes:
@@ -248,6 +205,7 @@ def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1000) -> bytes:
 
     min_q, max_q = 10, 95
     best_compressed = None
+    compressed = image_bytes
 
     while min_q <= max_q:
         mid_q = (min_q + max_q) // 2
@@ -263,35 +221,8 @@ def compress_image(image_bytes: bytes, max_size_kb=1024, max_dim=1000) -> bytes:
     return best_compressed if best_compressed else compressed
 
 
-async def extract_text_from_image(image_data: bytes, retries: int = 3) -> str:
-    """Send image to OCR.space API and return cleaned text."""
-    delay = 2
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        for attempt in range(retries):
-            try:
-                response = await client.post(
-                    url="https://api.ocr.space/parse/image",
-                    files={"filename": ("compressed.jpg", image_data)},
-                    data={
-                        "apikey": OCR_API_KEY,
-                        "language": "eng",
-                        "OCREngine": "2",
-                    },
-                )
-                response.raise_for_status()
-                result = response.json()
-
-                if result.get("IsErroredOnProcessing"):
-                    error_msg = result.get("ErrorMessage", "Unknown error")
-                    raise BadRequestException(error_msg)
-
-                return result["ParsedResults"][0].get("ParsedText", "")
-
-            except httpx.RequestError:
-                if attempt < retries - 1:
-                    import asyncio
-
-                    await asyncio.sleep(delay)
-                    delay *= 2
-                else:
-                    raise ExternalServiceException("OCR service request failed.")
+async def extract_text_from_image(image_data: bytes) -> str:
+    """Vision transcription via OpenAI (no OCR.space, no retries needed here)."""
+    if not image_data:
+        raise BadRequestException("Empty image data.")
+    return await llm_service.vision_extract_text(image_data)

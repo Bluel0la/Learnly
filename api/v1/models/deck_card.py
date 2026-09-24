@@ -12,14 +12,20 @@ class DeckCard(TimestampMixin, Base):
 
     card_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     deck_id = Column(
-        UUID(as_uuid=True), ForeignKey("deck.deck_id", ondelete="CASCADE"), index=True
+        UUID(as_uuid=True),
+        ForeignKey("deck.deck_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     user_id = Column(
-        UUID(as_uuid=True), ForeignKey("user.user_id", ondelete="CASCADE"), index=True
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
     card_with_answer = Column(Text, nullable=False)
-    question = Column(Text, nullable=True)
-    answer = Column(Text, nullable=True)
+    question = Column(Text, nullable=False)
+    answer = Column(Text, nullable=False)
 
     source_summary = Column(Text, nullable=True)
     source_chunk = Column(Text, nullable=True)

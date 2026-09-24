@@ -14,16 +14,20 @@ class ModelResponse(TimestampMixin, Base):
     query_id = Column(
         UUID(as_uuid=True),
         ForeignKey("user_prompt.query_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
         index=True,
     )
     chat_id = Column(
         UUID(as_uuid=True),
         ForeignKey("chat.chat_id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     user_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("user.user_id", ondelete="CASCADE"),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
     model_response = Column(Text, nullable=False)

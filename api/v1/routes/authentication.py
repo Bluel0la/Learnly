@@ -1,22 +1,13 @@
 from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
 from sqlalchemy.orm import Session
-from api.db.database import get_db  
-from api.v1.models.user import User 
-from api.utils.authentication import get_current_user
-from api.v1.models.revoked_tokens import RevokedToken
-from api.v1.schemas.UserRegister import UserCreate, UserSignin, UserUpdate
+from api.db.database import get_db
+from api.v1.models.user import User
+from api.utils.authentication import get_current_user, oauth2_scheme
+from api.v1.schemas.UserRegister import UserCreate, UserSignin, UserUpdate, PasswordChange
 from api.utils.authentication import hash_password, verify_password, create_access_token, decode_access_token, revoke_token
+from api.core.config import settings
 from jose import jwt, JWTError
-from fastapi.security import OAuth2PasswordBearer
-from dotenv import load_dotenv
-import os
-blacklisted_tokens = set()
 
-
-load_dotenv(".env")
-ALGORITHM = os.getenv("ALGORITHM")
-SECRET_KEY = os.getenv("SECRET")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 auth = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -33,10 +24,10 @@ def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
 
     # Create new user
     new_user = User(
-        firstname=user_data.firstname,
-        lastname=user_data.lastname,
+        firstname=user_data.firstname.strip(),
+        lastname=user_data.lastname.strip(),
         email=user_data.email,
-        password=hashed_pwd,
+        hashed_password=hashed_pwd,
     )
 
     db.add(new_user)
@@ -49,7 +40,7 @@ def register_user(user_data: UserCreate, db: Session = Depends(get_db)):
 @auth.post("/login")
 def login(user_data: UserSignin, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == user_data.email).first()
-    if not user or not verify_password(user_data.password, user.password):
+    if not user or not verify_password(user_data.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     # Generate JWT
@@ -90,9 +81,7 @@ def logout(
     db: Session = Depends(get_db),
 ):
     try:
-        payload = jwt.decode(
-            token, SECRET_KEY, algorithms=[ALGORITHM]
-        )
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
         email = payload.get("sub")
         if email is None:
             raise ValueError("Token payload missing subject (email).")
@@ -101,14 +90,14 @@ def logout(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         )
 
-    # 🔍 Query user by email
+    # Query user by email
     user = db.query(User).filter(User.email == email).first()
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
 
-    background_tasks.add_task(revoke_token, db, token, user.id)
+    background_tasks.add_task(revoke_token, db, token, user.user_id)
     return {"detail": "Successfully logged out"}
 
 
@@ -125,13 +114,13 @@ def update_details(
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
 
-        # Update user fields if provided
+    # Update user fields if provided
     if user_data.firstname is not None:
-        user.firstname = user_data.firstname
+        user.firstname = user_data.firstname.strip()
     if user_data.lastname is not None:
-        user.lastname = user_data.lastname
+        user.lastname = user_data.lastname.strip()
     if user_data.educational_level is not None:
-        user.educational_level = user_data.educational_level
+        user.educational_level = user_data.educational_level.strip()
     if user_data.age is not None:
         user.age = user_data.age
 
@@ -143,6 +132,20 @@ def update_details(
         "message": "User detail successfully updated",
         "user_id": current_user.user_id
     }
+
+
+@auth.post("/change-password")
+def change_password(
+    payload: PasswordChange,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    user = db.query(User).filter(User.user_id == current_user.user_id).first()
+    if not user or not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    user.hashed_password = hash_password(payload.new_password)
+    db.commit()
+    return {"message": "Password changed successfully."}
 
 # Delete a user's account
 @auth.delete("/delete")

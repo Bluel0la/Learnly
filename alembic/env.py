@@ -6,7 +6,7 @@ from decouple import config as decouple_config
 import os, sys
 from dotenv import load_dotenv
 
-load_dotenv(".env.config")
+load_dotenv(".env")
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../"))
 sys.path.append(project_root)

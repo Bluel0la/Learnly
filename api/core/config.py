@@ -1,47 +1,35 @@
-"""
-Centralized Configuration Settings.
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-This module loads environment variables and defines application-wide 
-constants, preventing magic numbers from being scattered across the codebase.
-"""
-import os
-import ast
-from dotenv import load_dotenv
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-load_dotenv(".env")
-
-class Settings:
-    # LLM & External Services
-    MODEL_ENDPOINT: str = os.getenv("MODEL_ENDPOINT", "")
-    MODEL_UTILITY: str = os.getenv("MODEL_UTILITY", "")
-    OCR_API_KEY: str = os.getenv("OCR_API", "")
+    # LLM — OpenAI only
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_TIMEOUT_SECONDS: float = 60.0
+    OPENAI_MAX_TOKENS_SUMMARY: int = 512
+    OPENAI_MAX_TOKENS_CHAT: int = 1024
 
     # Security & Auth
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
-    ALGORITHM: str = os.getenv("ALGORITHM", "HS256")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
+    SECRET_KEY: str = ""
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+
+    # Database
+    DB_URL: str = ""
 
     # Rate Limiting
-    # (Fallbacks provided if not found in .env)
-    RATE_LIMIT_REQUESTS: int = int(os.getenv("RATE_LIMIT_REQUESTS", "5"))
-    RATE_LIMIT_WINDOW_SECONDS: int = int(os.getenv("RATE_LIMIT_WINDOW_SECONDS", "3600"))
+    RATE_LIMIT_REQUESTS: int = 5
+    RATE_LIMIT_WINDOW_SECONDS: int = 3600
 
     # Quiz Difficulty Thresholds (0-100 scale)
-    QUIZ_PRO_THRESHOLD: float = float(os.getenv("QUIZ_PRO_THRESHOLD", "85.0"))
-    QUIZ_MEDIUM_THRESHOLD: float = float(os.getenv("QUIZ_MEDIUM_THRESHOLD", "60.0"))
+    QUIZ_PRO_THRESHOLD: float = 85.0
+    QUIZ_MEDIUM_THRESHOLD: float = 60.0
 
     # Quiz Randomization Weights
-    # Defining weights for [easy, medium, pro] depending on current base level
-    # Stored in env as list strings: "[0.2, 0.6, 0.2]"
-    WEIGHTS_FROM_MEDIUM: list[float] = ast.literal_eval(
-        os.getenv("WEIGHTS_FROM_MEDIUM", "[0.2, 0.6, 0.2]")
-    )
-    WEIGHTS_FROM_PRO: list[float] = ast.literal_eval(
-        os.getenv("WEIGHTS_FROM_PRO", "[0.3, 0.7]")  # [medium, pro]
-    )
-    WEIGHTS_FROM_EASY: list[float] = ast.literal_eval(
-        os.getenv("WEIGHTS_FROM_EASY", "[0.7, 0.3]")  # [easy, medium]
-    )
+    WEIGHTS_FROM_MEDIUM: list[float] = [0.2, 0.6, 0.2]
+    WEIGHTS_FROM_PRO: list[float] = [0.3, 0.7]  # [medium, pro]
+    WEIGHTS_FROM_EASY: list[float] = [0.7, 0.3]  # [easy, medium]
 
 
 settings = Settings()

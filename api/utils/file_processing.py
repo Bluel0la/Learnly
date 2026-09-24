@@ -7,7 +7,7 @@ from docx import Document as DocxDocument
 from fastapi import HTTPException
 
 
-ALLOWED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".pptx"}
+ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".pptx"}
 MAX_FILE_SIZE_MB = 10
 
 

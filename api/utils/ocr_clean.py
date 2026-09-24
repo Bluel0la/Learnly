@@ -2,7 +2,6 @@ from spellchecker import SpellChecker
 import re
 
 spell = SpellChecker()
-spell.word_frequency.load_words(["warehouse", "supplies", "logistics", "transport", "Ayodele"])
 
 def normalize_text(text: str) -> str:
     # Allow math symbols, brackets, punctuation, and newlines

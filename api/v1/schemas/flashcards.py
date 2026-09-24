@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
 from uuid import UUID
 from datetime import datetime
@@ -6,25 +6,26 @@ from typing import Optional
 
 
 class DeckCreate(BaseModel):
-    title: str
+    title: str = Field(..., min_length=1, max_length=150)
 
 
 class DeckOut(BaseModel):
     deck_id: UUID
     title: str
     date_created: datetime
+    card_count: Optional[int] = None
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class CardCreate(BaseModel):
-    question: str
-    answer: str
+    question: str = Field(..., min_length=1, max_length=2000)
+    answer: str = Field(..., min_length=1, max_length=2000)
 
 
 class AddCards(BaseModel):
-    cards: List[CardCreate]
+    cards: List[CardCreate] = Field(..., min_length=1, max_length=100)
 
 
 class DeckCardOut(BaseModel):
@@ -43,7 +44,7 @@ class DeckCardOut(BaseModel):
     chunk_index: Optional[int]
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 class FlashcardReviewInput(BaseModel):
@@ -81,8 +82,7 @@ class QuizStartResponse(BaseModel):
 
 class QuizSubmission(BaseModel):
     card_id: UUID
-    user_answer: str
-    is_correct: bool
+    user_answer: str = Field(..., min_length=1, max_length=2000)
 
 class QuizResultDetail(BaseModel):
     card_id: UUID

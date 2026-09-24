@@ -1,7 +1,7 @@
 """
 Chat route handlers — thin wrappers that delegate to chat_service.
 """
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, Query, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -17,8 +17,10 @@ from api.core.exceptions import RateLimitedException, BadRequestException
 
 chat = APIRouter(prefix="/chat", tags=["Chat"])
 
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
-@chat.post("/start-session")
+
+@chat.post("/start-session", status_code=status.HTTP_201_CREATED)
 def create_chat(
     chat_data: ChatCreate,
     db: Session = Depends(get_db),
@@ -44,6 +46,8 @@ async def query_model(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    if is_rate_limited(f"chat:{current_user.user_id}"):
+        raise RateLimitedException()
     return await chat_service.send_message(
         db,
         user_id=current_user.user_id,
@@ -55,8 +59,8 @@ async def query_model(
 @chat.get("/session/{chat_id}")
 def get_chat_history(
     chat_id: UUID,
-    skip: int = 0,
-    limit: int = 50,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -67,8 +71,8 @@ def get_chat_history(
 
 @chat.get("/sessions")
 def get_all_chat_sessions(
-    skip: int = 0,
-    limit: int = 20,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -81,16 +85,22 @@ def get_all_chat_sessions(
 async def extract_text(
     file: UploadFile = File(...), current_user: User = Depends(get_current_user)
 ):
+    """Image -> OpenAI vision transcription (OCR.space removed)."""
     ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
     if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise BadRequestException(
             f"Unsupported file type: {file.content_type}. Please upload a JPEG, PNG, or WEBP image."
         )
 
-    if is_rate_limited(current_user.user_id):
+    if is_rate_limited(f"ocr:{current_user.user_id}"):
         raise RateLimitedException()
 
     image_bytes = await file.read()
+    if len(image_bytes) > MAX_IMAGE_BYTES:
+        raise BadRequestException("Image too large. Maximum size is 10MB.")
+    if not image_bytes:
+        raise BadRequestException("Uploaded image is empty.")
+
     compressed_image = chat_service.compress_image(image_bytes)
     parsed_text = await chat_service.extract_text_from_image(compressed_image)
     normalized = normalize_text(parsed_text)

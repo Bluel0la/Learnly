@@ -12,9 +12,12 @@ class Deck(TimestampMixin, Base):
 
     deck_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(
-        UUID(as_uuid=True), ForeignKey("user.user_id", ondelete="CASCADE"), index=True
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
-    title = Column(String(255))
+    title = Column(String(255), nullable=False)
 
     user = relationship("User", back_populates="decks")
     cards = relationship("DeckCard", back_populates="deck", cascade="all, delete")

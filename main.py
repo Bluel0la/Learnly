@@ -25,7 +25,6 @@ origins = [
     "https://learnly-lgx7.onrender.com",
     "https://intellect-canvas-ui.lovable.app",
     "https://preview--intellect-canvas-ui.lovable.app",
-    "*"
 ]
 
 app.add_middleware(
@@ -47,6 +46,11 @@ async def get_root(request: Request) -> dict:
         "message": "Welcome to API",
         "URL": "",
     }
+
+
+@app.get("/health", tags=["Home"])
+async def health_check() -> dict:
+    return {"status": "ok"}
 
 
 if __name__ == "__main__":

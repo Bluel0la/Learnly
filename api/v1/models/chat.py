@@ -12,9 +12,12 @@ class Chat(TimestampMixin, Base):
 
     chat_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4, index=True)
     user_id = Column(
-        UUID(as_uuid=True), ForeignKey("user.user_id", ondelete="CASCADE"), index=True
+        UUID(as_uuid=True),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
-    chat_title = Column(String(255))
+    chat_title = Column(String(255), nullable=False, default="Untitled Chat")
 
     user = relationship("User", back_populates="chats")
     prompts = relationship("UserPrompt", back_populates="chat", cascade="all, delete")

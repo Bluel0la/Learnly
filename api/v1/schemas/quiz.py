@@ -13,7 +13,7 @@ class TopicInfo(BaseModel):
 
 # 🧠 2. Start Quiz Request
 class StartQuizRequest(BaseModel):
-    topic: str  # e.g., "addition", "decimal multiplication"
+    topic: str = Field(..., min_length=1, max_length=100)  # e.g., "addition", "decimal multiplication"
     num_questions: int = Field(default=5, ge=1, le=20)
 
 
@@ -45,12 +45,12 @@ class QuestionBatchResponse(BaseModel):
 #  6. User Submission (one question)
 class QuestionAnswerSubmission(BaseModel):
     question_id: UUID
-    selected_answer: str
+    selected_answer: str = Field(..., min_length=1, max_length=500)
 
 
 #  7. Submission Request (batch)
 class SubmitAnswersRequest(BaseModel):
-    responses: List[QuestionAnswerSubmission]
+    responses: List[QuestionAnswerSubmission] = Field(..., min_length=1, max_length=50)
 
 
 #  8. Graded Result (per question)
@@ -139,15 +139,15 @@ class AdaptiveBatchRequest(BaseModel):
 
 
 class SimulatedExamRequest(BaseModel):
-    topics: List[str] = Field(..., min_items=1)
-    num_questions: int = Field(..., gt=0)
+    topics: List[str] = Field(..., min_length=1, max_length=10)
+    num_questions: int = Field(..., gt=0, le=50)
 
 
 class SimulatedExamQuestion(BaseModel):
     question_id: UUID
     topic: str
     question: str
-    difficulty: str
+    difficulty: Literal["easy", "medium", "pro"]
     choices: List[str]
 
 

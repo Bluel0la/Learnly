@@ -12,7 +12,7 @@ from typing import Optional
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from api.v1.models.quizzer import Quizzer
+from api.v1.models.quizzer import Quizzer, QuizStatusEnum
 from api.v1.models.quiz_question import QuizzerQuestion
 from api.utils.math_topics import TOPIC_GENERATORS
 from api.core.exceptions import NotFoundException, BadRequestException
@@ -104,7 +104,7 @@ def start_quiz_session(
         difficulty=base_difficulty,
     )
     db.add(quiz_obj)
-    db.commit()
+    db.flush()
 
     question_objs = []
     for _ in range(num_questions):
@@ -123,8 +123,12 @@ def start_quiz_session(
             )
         )
 
-    db.bulk_save_objects(question_objs)
-    db.commit()
+    try:
+        db.bulk_save_objects(question_objs)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "session_id": quiz_id,
@@ -175,6 +179,16 @@ def grade_answers(
     db: Session, user_id: UUID, session_id: UUID, responses: list
 ) -> dict:
     """Grade submitted answers, update DB, and return results."""
+    if not responses:
+        raise BadRequestException("At least one answer is required.")
+
+    seen: set[str] = set()
+    for ans in responses:
+        key = str(ans.question_id)
+        if key in seen:
+            raise BadRequestException("Duplicate question_id in submission.")
+        seen.add(key)
+
     quiz = (
         db.query(Quizzer)
         .filter_by(quiz_id=session_id, user_id=user_id)
@@ -190,6 +204,10 @@ def grade_answers(
         .all()
     }
 
+    unknown = [str(ans.question_id) for ans in responses if str(ans.question_id) not in question_map]
+    if unknown:
+        raise BadRequestException(f"Unknown question_id: {unknown[0]}.")
+
     graded_results = []
     correct = 0
     wrong = 0
@@ -199,8 +217,8 @@ def grade_answers(
         if not q:
             continue
 
-        is_correct = ans.selected_answer.strip() == q.correct_answer.strip()
-        q.user_answer = ans.selected_answer
+        is_correct = ans.selected_answer.strip().lower() == q.correct_answer.strip().lower()
+        q.user_answer = ans.selected_answer.strip()
         q.is_correct = is_correct
 
         if is_correct:
@@ -219,8 +237,12 @@ def grade_answers(
         )
 
     quiz.correct_answers = correct
-    quiz.status = "completed"
-    db.commit()
+    quiz.status = QuizStatusEnum.completed
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     total = len(graded_results)
     score_percent = round((correct / total) * 100, 2) if total else 0.0
@@ -268,7 +290,7 @@ def generate_adaptive_batch(
             QuizzerQuestion.user_id == user_id,
             QuizzerQuestion.is_correct.isnot(None),
         )
-        .order_by(QuizzerQuestion.question_id.desc())
+        .order_by(QuizzerQuestion.created_at.desc())
         .limit(5)
         .all()
     )
@@ -315,7 +337,11 @@ def generate_adaptive_batch(
         )
 
     quiz.total_questions += num_questions
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {
         "session_id": session_id,
@@ -323,6 +349,40 @@ def generate_adaptive_batch(
         "remaining": 0,
         "difficulty_level": next_difficulty,
         "previous_score_percent": score_percent,
+    }
+
+
+def end_session(db: Session, user_id: UUID, session_id: UUID) -> dict:
+    """Mark a session completed and return its summary (was missing)."""
+    from datetime import datetime, timezone
+
+    quiz = db.query(Quizzer).filter_by(quiz_id=session_id, user_id=user_id).first()
+    if not quiz:
+        raise NotFoundException("Quiz not found.")
+
+    questions = db.query(QuizzerQuestion).filter_by(quiz_id=session_id, user_id=user_id).all()
+    correct = sum(1 for q in questions if q.is_correct is True)
+    answered = [q for q in questions if q.is_correct is not None]
+    wrong = sum(1 for q in answered if q.is_correct is False)
+    total = len(questions)
+
+    quiz.status = QuizStatusEnum.completed
+    quiz.correct_answers = correct
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    accuracy = round((correct / total) * 100, 2) if total else 0.0
+    return {
+        "session_id": session_id,
+        "topic": quiz.topic,
+        "total_questions": total,
+        "correct": correct,
+        "wrong": wrong,
+        "accuracy": accuracy,
+        "ended_at": datetime.now(timezone.utc),
     }
 
 
@@ -518,10 +578,14 @@ def start_simulated_exam(
             user_id=user_id,
             topic="multi-topic",
             total_questions=len(questions),
-            status="in_progress",
+            status=QuizStatusEnum.in_progress,
         )
     )
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     return {"session_id": session_id, "questions": questions, "total": len(questions)}
