@@ -24,15 +24,15 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 
-print("Database URL:", os.getenv("DB_URL"))
-
 # Get the database URL from the environment variable
 database_url = os.getenv("DB_URL")
 if not database_url:
     raise ValueError("DB_URL not set in environment")
 
 # Set the SQLAlchemy URL dynamically
-config.set_main_option("sqlalchemy.url", database_url)
+# NOTE: escape % as %% — alembic.ini uses BasicInterpolation which treats
+# bare % (from percent-encoded passwords) as interpolation syntax.
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 # Add your model's MetaData object here
 # for 'autogenerate' support
