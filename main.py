@@ -23,7 +23,7 @@ register_exception_handlers(app)
 origins = [
     "http://localhost:8000",
     "http://localhost:8080",
-    "https://learnly-lgx7.onrender.com"
+    "https://learnly-1d8i.onrender.com"
 ]
 
 app.add_middleware(
