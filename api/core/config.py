@@ -3,12 +3,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # LLM — OpenAI only
-    OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o-mini"
-    OPENAI_TIMEOUT_SECONDS: float = 60.0
-    OPENAI_MAX_TOKENS_SUMMARY: int = 512
-    OPENAI_MAX_TOKENS_CHAT: int = 1024
+    # LLM — OpenAI-compatible API (currently NVIDIA NIM)
+    LLM_API_KEY: str = ""
+    # Interactive paths (chat, classify, vision): point at a FAST model.
+    LLM_MODEL_CHAT: str = "meta/muse-glimmer-30b"
+    # Heavy generation (summaries, flashcards).
+    LLM_MODEL_GEN: str = "meta/muse-glimmer-30b"
+    LLM_BASE_URL: str = "https://integrate.api.nvidia.com/v1"
+    LLM_TIMEOUT_SECONDS: float = 300.0
+    LLM_MAX_TOKENS_SUMMARY: int = 2048
+    LLM_MAX_TOKENS_CHAT: int = 4096
+    # Sampling per vendor recipe for the chat model.
+    LLM_TEMPERATURE: float = 1.0
+    LLM_TOP_P: float = 0.95
+    # Single automatic retry on provider timeouts (non-stream calls only).
+    LLM_RETRY_ON_TIMEOUT: bool = True
 
     # Security & Auth
     SECRET_KEY: str = ""

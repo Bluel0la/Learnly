@@ -1,8 +1,9 @@
 """
 Chat route handlers — thin wrappers that delegate to chat_service.
 """
+import json
 from fastapi import APIRouter, Depends, UploadFile, File, Query, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session
 from uuid import UUID
 
@@ -53,6 +54,36 @@ async def query_model(
         user_id=current_user.user_id,
         chat_id=user_input.chat_id,
         prompt=user_input.prompt,
+    )
+
+
+@chat.post("/send-message-stream")
+async def query_model_stream(
+    user_input: ModelRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SSE stream: `data: {"token": ...}` events, then `data: {"done": {...}}`
+    (or `data: {"error": ...}`). Persists only on full completion."""
+    if is_rate_limited(f"chat:{current_user.user_id}"):
+        raise RateLimitedException()
+
+    async def event_gen():
+        async for event in chat_service.send_message_stream(
+            db,
+            user_id=current_user.user_id,
+            chat_id=user_input.chat_id,
+            prompt=user_input.prompt,
+        ):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

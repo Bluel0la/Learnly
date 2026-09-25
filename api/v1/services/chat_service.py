@@ -1,11 +1,13 @@
 """
-Business logic for the Chat module (OpenAI-only).
+Business logic for the Chat module (NVIDIA NIM via OpenAI-compatible API).
 
-Replaces the old MODEL_ENDPOINT / OCR.space flow with llm_service:
-- send_message(): 1 DB fetch + 1 OpenAI chat_complete() + single transaction
-- extract_text_from_image(): OpenAI vision (no OCR.space key)
+- send_message(): 1 DB fetch + concurrent answer/classify + single transaction
+- send_message_stream(): same, but yields tokens live (SSE) as they arrive
+- extract_text_from_image(): vision transcription (no OCR.space key)
 """
+import asyncio
 import io
+import json
 from uuid import UUID, uuid4
 
 from PIL import Image
@@ -143,18 +145,20 @@ async def send_message(
     history_dicts = past_turns_to_dicts(past_turns_reversed)
     messages = llm_service.build_history_messages(history_dicts, prompt)
 
-    model_text = await llm_service.chat_complete(messages)
-
-    # Cheap separate classification only when this isn't a follow-up;
-    # otherwise inherit last turn's label.
+    # Answer and classification are independent — run concurrently.
+    # Trivial messages (hi, thanks, ok) and follow-ups skip classification.
     lowered = prompt.strip().lower()
     is_followup = lowered.startswith(("why", "how", "what does")) or lowered in {
         "explain", "please explain", "can you explain that?", "what?",
     }
-    if is_followup and last_task_type:
-        task_type = last_task_type
+    if (is_followup and last_task_type) or llm_service.is_trivial_message(prompt):
+        task_type = last_task_type or "general_chat"
+        model_text = await llm_service.chat_complete(messages)
     else:
-        task_type = await llm_service.classify_task(prompt)
+        model_text, task_type = await asyncio.gather(
+            llm_service.chat_complete(messages),
+            llm_service.classify_task(prompt),
+        )
 
     # Single transaction for prompt + response.
     try:
@@ -188,6 +192,117 @@ async def send_message(
         "query_id": str(prompt_obj.query_id),
         "response": model_text,
         "task_type": task_type,
+    }
+
+
+async def send_message_stream(db: Session, user_id: UUID, chat_id: UUID, prompt: str):
+    """Streaming variant of send_message.
+
+    Async generator yielding event dicts:
+      {"token": str}            — content as it arrives
+      {"done": {...}}           — final payload (chat_id/query_id/response/task_type)
+      {"error": str}            — failure; nothing was persisted
+
+    Classification runs concurrently with the stream; persistence happens
+    once, after the full response is in.
+    """
+    from api.utils.context import past_turns_to_dicts
+
+    prompt = (prompt or "").strip()
+    if not prompt:
+        yield {"error": "Prompt must not be empty."}
+        return
+    if len(prompt) > 4000:
+        yield {"error": "Prompt is too long (max 4000 characters)."}
+        return
+
+    chat_session = db.query(Chat).filter_by(chat_id=chat_id, user_id=user_id).first()
+    if not chat_session:
+        yield {"error": "Chat session not found."}
+        return
+
+    past_turns = (
+        db.query(UserPrompt)
+        .options(joinedload(UserPrompt.response))
+        .filter_by(chat_id=chat_id, user_id=user_id)
+        .order_by(UserPrompt.created_at.desc())
+        .limit(10)
+        .all()
+    )
+    past_turns_reversed = list(reversed(past_turns))
+    last_task_type = past_turns_reversed[-1].task_type if past_turns_reversed else None
+
+    history_dicts = past_turns_to_dicts(past_turns_reversed)
+    messages = llm_service.build_history_messages(history_dicts, prompt)
+
+    lowered = prompt.strip().lower()
+    is_followup = lowered.startswith(("why", "how", "what does")) or lowered in {
+        "explain", "please explain", "can you explain that?", "what?",
+    }
+    if (is_followup and last_task_type) or llm_service.is_trivial_message(prompt):
+        classify_coro = None
+        task_type = last_task_type or "general_chat"
+    else:
+        classify_coro = asyncio.ensure_future(llm_service.classify_task(prompt))
+        task_type = None
+
+    parts: list[str] = []
+    try:
+        async for token in llm_service.stream_chat_complete(messages):
+            parts.append(token)
+            yield {"token": token}
+    except Exception as e:
+        if classify_coro is not None:
+            classify_coro.cancel()
+        yield {"error": str(e)}
+        return
+
+    model_text = "".join(parts).strip()
+    if not model_text:
+        if classify_coro is not None:
+            classify_coro.cancel()
+        yield {"error": "Model response is empty or malformed."}
+        return
+
+    if classify_coro is not None:
+        try:
+            task_type = await classify_coro
+        except Exception:
+            task_type = "general_chat"
+
+    try:
+        prompt_obj = UserPrompt(
+            query_id=uuid4(),
+            user_id=user_id,
+            chat_id=chat_id,
+            query=prompt,
+            task_type=task_type,
+        )
+        db.add(prompt_obj)
+        db.flush()
+
+        response_obj = ModelResponse(
+            response_id=uuid4(),
+            query_id=prompt_obj.query_id,
+            user_id=user_id,
+            chat_id=chat_id,
+            model_response=model_text,
+        )
+        db.add(response_obj)
+        db.commit()
+        db.refresh(prompt_obj)
+    except Exception as e:
+        db.rollback()
+        yield {"error": f"Failed to save exchange: {e}"}
+        return
+
+    yield {
+        "done": {
+            "chat_id": str(chat_id),
+            "query_id": str(prompt_obj.query_id),
+            "response": model_text,
+            "task_type": task_type,
+        }
     }
 
 

@@ -3,10 +3,10 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.112.2-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-SQLAlchemy_2.0-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)
-![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o-412991?style=for-the-badge&logo=openai&logoColor=white)
+![LLM](https://img.shields.io/badge/LLM-NVIDIA_NIM-76b900?style=for-the-badge&logo=nvidia&logoColor=white)
 ![Alembic](https://img.shields.io/badge/Alembic-Migrations-red?style=for-the-badge&logo=sqlite&logoColor=white)
 
-**Learnly API** is an AI-powered educational and study companion backend built with **FastAPI**, **PostgreSQL**, and **OpenAI GPT-4o**. It empowers learners by automatically converting uploaded study documents (PDFs, DOCX, PPTX, Images) and topic prompts into interactive flashcard decks, adaptive spaced-repetition drills, customized quizzes, simulated examinations, and interactive AI study chats.
+**Learnly API** is an AI-powered educational and study companion backend built with **FastAPI**, **PostgreSQL**, and an **OpenAI-compatible LLM API** (NVIDIA NIM). It empowers learners by automatically converting uploaded study documents (PDFs, DOCX, PPTX, Images) and topic prompts into interactive flashcard decks, adaptive spaced-repetition drills, customized quizzes, simulated examinations, and interactive AI study chats.
 
 ---
 
@@ -18,7 +18,7 @@
 * **Profile Management**: Profile updates, password changes, and account deletion endpoints.
 
 ### 🤖 AI Study Assistant & Chat (`/api/v1/chat`)
-* **Interactive AI Tutor**: Session-based chat assistant powered by OpenAI GPT-4o for answering questions and explaining difficult concepts.
+* **Interactive AI Tutor**: Session-based chat assistant powered by a hosted LLM for answering questions and explaining difficult concepts.
 * **Multi-Format Document Parsing**: Text extraction from PDFs (`PyPDF2`), Word documents (`python-docx`), PowerPoint slides (`python-pptx`), and images (`Pillow`).
 
 ### 🃏 Smart Flashcards & Adaptive Learning (`/api/v1/flashcards`)
@@ -46,7 +46,7 @@
 * **ASGI Server**: [Uvicorn](https://www.uvicorn.org/)
 * **Database**: PostgreSQL
 * **ORM & Migrations**: [SQLAlchemy 2.0](https://www.sqlalchemy.org/) & [Alembic](https://alembic.sqlalchemy.org/)
-* **AI / LLM Integration**: [OpenAI Python SDK](https://github.com/openai/openai-python) (GPT-4o / GPT-4o-mini)
+* **AI / LLM Integration**: [OpenAI Python SDK](https://github.com/openai/openai-python) against an OpenAI-compatible endpoint (NVIDIA NIM)
 * **Authentication**: PyJWT / `python-jose`, `passlib` with `bcrypt`
 * **Document Parsing**: `PyPDF2`, `python-docx`, `python-pptx`, `Pillow`, `pyspellchecker`
 * **Configuration**: `pydantic-settings` & `python-dotenv`
@@ -66,7 +66,7 @@ learnly_api/
 │       ├── models/         # SQLAlchemy ORM models (User, Deck, Card, Quiz, Chat, Tokens)
 │       ├── routes/         # FastAPI endpoint routers (auth, chat, flashcards, quiz)
 │       ├── schemas/        # Pydantic schemas for request validation & response serializing
-│       └── services/       # Core business logic & OpenAI service integrations
+│       └── services/       # Core business logic & LLM service integrations
 ├── main.py                 # Application entrypoint & CORS middleware setup
 ├── requirements.txt        # Python package dependencies
 ├── alembic.ini             # Alembic migration configuration
@@ -82,7 +82,7 @@ learnly_api/
 Ensure you have the following installed on your machine:
 * **Python 3.10+**
 * **PostgreSQL** database server
-* **OpenAI API Key**
+* **LLM API Key (NVIDIA)**
 
 ### 1. Clone the Repository
 
@@ -122,12 +122,17 @@ cp .env.example .env
 Fill in your configuration settings in `.env`:
 
 ```ini
-# OpenAI Configuration
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4o-mini
-OPENAI_TIMEOUT_SECONDS=60
-OPENAI_MAX_TOKENS_SUMMARY=512
-OPENAI_MAX_TOKENS_CHAT=1024
+# LLM Configuration (OpenAI-compatible API — NVIDIA NIM by default)
+LLM_API_KEY=your_nvidia_api_key_here
+LLM_MODEL_CHAT=meta/muse-glimmer-30b
+LLM_MODEL_GEN=meta/muse-glimmer-30b
+LLM_BASE_URL=https://integrate.api.nvidia.com/v1
+LLM_TIMEOUT_SECONDS=300
+LLM_MAX_TOKENS_SUMMARY=2048
+LLM_MAX_TOKENS_CHAT=4096
+LLM_TEMPERATURE=1.0
+LLM_TOP_P=0.95
+LLM_RETRY_ON_TIMEOUT=true
 
 # Database
 DB_URL=postgresql+psycopg2://user:password@localhost:5432/learnly
